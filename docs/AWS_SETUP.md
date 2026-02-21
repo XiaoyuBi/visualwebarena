@@ -121,7 +121,17 @@ python scripts/generate_test_data.py
 bash prepare.sh
 ```
 
-Ensure the instance can reach the URLs above (e.g. Docker sites are up if using localhost).
+Ensure the instance can reach the URLs above (e.g. Docker sites are up if using localhost).  
+You can test access to each service by running (replace the port with the correct one for each service):
+
+```bash
+curl -I http://${HOSTNAME}:9980       # Test Classifieds
+curl -I http://${HOSTNAME}:7770       # Test Shopping
+curl -I http://${HOSTNAME}:9999       # Test Reddit
+curl -I http://${HOSTNAME}:8888       # Test Wikipedia
+```
+
+If you see HTTP response headers (like `HTTP/1.1 200 OK`), the service is reachable.
 
 ---
 

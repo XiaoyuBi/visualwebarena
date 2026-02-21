@@ -439,10 +439,11 @@ def test(
 
             scores.append(score)
 
+            trajectory_length = (len(trajectory) - 1) // 2
             if score == 1:
-                logger.info(f"[Result] (PASS) {config_file}")
+                logger.info(f"[Result] (PASS) {config_file} [Trajectory length: {trajectory_length}]")
             else:
-                logger.info(f"[Result] (FAIL) {config_file}")
+                logger.info(f"[Result] (FAIL) {config_file} [Trajectory length: {trajectory_length}]")
 
             if args.save_trace_enabled:
                 env.save_trace(
