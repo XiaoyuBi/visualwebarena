@@ -88,6 +88,16 @@ playwright install-deps
 pip install -e .
 ```
 
+### 2.6 NLTK Data (required for evaluation)
+
+The evaluation uses NLTK for text processing. Download the required tokenizer:
+
+```bash
+python -c "import nltk; nltk.download('punkt')"
+```
+
+Without this, `run.py` will fail with `LookupError: Resource punkt not found`.
+
 ---
 
 ## 3. Configuration and Cookies
@@ -201,9 +211,10 @@ To open the AWS repo inside Cursor over SSH:
 | 1 | Create EC2: Ubuntu 22.04 LTS AMI, r6i.xlarge (or g4dn/g5 for GPU), 50 GiB storage, key pair |
 | 2 | SSH in and install Python 3.11, Playwright system deps, clone repo, venv, `pip install -r requirements.txt` |
 | 3 | Upgrade transformers, tokenizers, datasets, torch; `playwright install` + `install-deps`; `pip install -e .` |
-| 4 | Set DATASET, CLASSIFIEDS, SHOPPING, REDDIT, WIKIPEDIA, HOMEPAGE, OPENAI_API_KEY |
-| 5 | `python scripts/generate_test_data.py` and `bash prepare.sh` |
-| 6 | Run `run.py` (or `run_demo.py`) and inspect `results/` or `demo_test/` |
+| 4 | `python -c "import nltk; nltk.download('punkt')"` (required for evaluation) |
+| 5 | Set DATASET, CLASSIFIEDS, SHOPPING, REDDIT, WIKIPEDIA, HOMEPAGE, OPENAI_API_KEY |
+| 6 | `python scripts/generate_test_data.py` and `bash prepare.sh` |
+| 7 | Run `run.py` (or `run_demo.py`) and inspect `results/` or `demo_test/` |
 
 ---
 
