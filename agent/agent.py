@@ -115,8 +115,12 @@ class PromptAgent(Agent):
         self.action_set_tag = action_set_tag
         self.captioning_fn = captioning_fn
 
-        # Check if the model is multimodal.
-        if ("gemini" in lm_config.model or "gpt-4" in lm_config.model and "vision" in lm_config.model) and type(prompt_constructor) == MultimodalCoTPromptConstructor:
+        # Check if the model is multimodal (vision-capable).
+        is_vision_model = (
+            "gemini" in lm_config.model
+            or ("gpt-4" in lm_config.model and ("vision" in lm_config.model or "gpt-4o" in lm_config.model))
+        )
+        if is_vision_model and type(prompt_constructor) == MultimodalCoTPromptConstructor:
             self.multimodal_inputs = True
         else:
             self.multimodal_inputs = False
@@ -156,7 +160,7 @@ class PromptAgent(Agent):
 
         if self.multimodal_inputs:
             prompt = self.prompt_constructor.construct(
-                trajectory, intent, page_screenshot_img, images, meta_data
+                trajectory, intent, page_screenshot_img, images or [], meta_data
             )
         else:
             prompt = self.prompt_constructor.construct(
