@@ -88,6 +88,16 @@ playwright install-deps
 pip install -e .
 ```
 
+### 2.6 NLTK Data (required for evaluation)
+
+The evaluation uses NLTK for text processing. Download the required tokenizer:
+
+```bash
+python -c "import nltk; nltk.download('punkt')"
+```
+
+Without this, `run.py` will fail with `LookupError: Resource punkt not found`.
+
 ---
 
 ## 3. Configuration and Cookies
@@ -97,13 +107,14 @@ pip install -e .
 Set URLs to your websites. If **websites run on the same instance**, use `localhost`:
 
 ```bash
+HOSTNAME="localhost"  # Set your instance or server hostname here
 export DATASET=visualwebarena
-export CLASSIFIEDS="http://localhost:9980"
+export CLASSIFIEDS="http://${HOSTNAME}:9980"
 export CLASSIFIEDS_RESET_TOKEN="4b61655535e7ed388f0d40a93600254c"
-export SHOPPING="http://localhost:7770"
-export REDDIT="http://localhost:9999"
-export WIKIPEDIA="http://localhost:8888"
-export HOMEPAGE="http://localhost:4399"
+export SHOPPING="http://${HOSTNAME}:7770"
+export REDDIT="http://${HOSTNAME}:9999"
+export WIKIPEDIA="http://${HOSTNAME}:8888"
+export HOMEPAGE="http://${HOSTNAME}:4399"
 export OPENAI_API_KEY=sk-<your-openai-key>
 ```
 
@@ -120,7 +131,17 @@ python scripts/generate_test_data.py
 bash prepare.sh
 ```
 
-Ensure the instance can reach the URLs above (e.g. Docker sites are up if using localhost).
+Ensure the instance can reach the URLs above (e.g. Docker sites are up if using localhost).  
+You can test access to each service by running (replace the port with the correct one for each service):
+
+```bash
+curl -I http://${HOSTNAME}:9980       # Test Classifieds
+curl -I http://${HOSTNAME}:7770       # Test Shopping
+curl -I http://${HOSTNAME}:9999       # Test Reddit
+curl -I http://${HOSTNAME}:8888       # Test Wikipedia
+```
+
+If you see HTTP response headers (like `HTTP/1.1 200 OK`), the service is reachable.
 
 ---
 
@@ -190,9 +211,10 @@ To open the AWS repo inside Cursor over SSH:
 | 1 | Create EC2: Ubuntu 22.04 LTS AMI, r6i.xlarge (or g4dn/g5 for GPU), 50 GiB storage, key pair |
 | 2 | SSH in and install Python 3.11, Playwright system deps, clone repo, venv, `pip install -r requirements.txt` |
 | 3 | Upgrade transformers, tokenizers, datasets, torch; `playwright install` + `install-deps`; `pip install -e .` |
-| 4 | Set DATASET, CLASSIFIEDS, SHOPPING, REDDIT, WIKIPEDIA, HOMEPAGE, OPENAI_API_KEY |
-| 5 | `python scripts/generate_test_data.py` and `bash prepare.sh` |
-| 6 | Run `run.py` (or `run_demo.py`) and inspect `results/` or `demo_test/` |
+| 4 | `python -c "import nltk; nltk.download('punkt')"` (required for evaluation) |
+| 5 | Set DATASET, CLASSIFIEDS, SHOPPING, REDDIT, WIKIPEDIA, HOMEPAGE, OPENAI_API_KEY |
+| 6 | `python scripts/generate_test_data.py` and `bash prepare.sh` |
+| 7 | Run `run.py` (or `run_demo.py`) and inspect `results/` or `demo_test/` |
 
 ---
 
