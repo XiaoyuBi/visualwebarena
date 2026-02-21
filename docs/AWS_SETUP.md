@@ -97,13 +97,14 @@ pip install -e .
 Set URLs to your websites. If **websites run on the same instance**, use `localhost`:
 
 ```bash
+HOSTNAME="localhost"  # Set your instance or server hostname here
 export DATASET=visualwebarena
-export CLASSIFIEDS="http://localhost:9980"
+export CLASSIFIEDS="http://${HOSTNAME}:9980"
 export CLASSIFIEDS_RESET_TOKEN="4b61655535e7ed388f0d40a93600254c"
-export SHOPPING="http://localhost:7770"
-export REDDIT="http://localhost:9999"
-export WIKIPEDIA="http://localhost:8888"
-export HOMEPAGE="http://localhost:4399"
+export SHOPPING="http://${HOSTNAME}:7770"
+export REDDIT="http://${HOSTNAME}:9999"
+export WIKIPEDIA="http://${HOSTNAME}:8888"
+export HOMEPAGE="http://${HOSTNAME}:4399"
 export OPENAI_API_KEY=sk-<your-openai-key>
 ```
 
