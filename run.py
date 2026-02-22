@@ -169,6 +169,12 @@ def config() -> argparse.Namespace:
         help="when not zero, will truncate the observation to this length before feeding to the model",
         default=3840,
     )
+    parser.add_argument(
+        "--max_images",
+        type=int,
+        help="max images per API request (0=unlimited). Example images are dropped first to stay within budget.",
+        default=0,
+    )
 
     # example config
     parser.add_argument("--test_start_idx", type=int, default=0)

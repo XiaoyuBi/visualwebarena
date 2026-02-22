@@ -30,7 +30,7 @@ for run in 1 2 3; do
     --action_set_tag "$action_set_tag" \
     --observation_type "$observation_type" \
     --captioning_model "$captioning_model" \
-    --viewport_height 2048 --max_obs_length 3840
+    --viewport_height 2048 --max_obs_length 3840 --max_images 4
 
   # --- Shopping ---
   result_dir="results_qwen_som_shopping_top100_run${run}${result_dir_suffix}"
@@ -45,7 +45,7 @@ for run in 1 2 3; do
     --action_set_tag "$action_set_tag" \
     --observation_type "$observation_type" \
     --captioning_model "$captioning_model" \
-    --viewport_height 2048 --max_obs_length 3840
+    --viewport_height 2048 --max_obs_length 3840 --max_images 4
 
   # --- Reddit ---
   result_dir="results_qwen_som_reddit_top100_run${run}${result_dir_suffix}"
@@ -60,7 +60,7 @@ for run in 1 2 3; do
     --action_set_tag "$action_set_tag" \
     --observation_type "$observation_type" \
     --captioning_model "$captioning_model" \
-    --viewport_height 2048 --max_obs_length 3840
+    --viewport_height 2048 --max_obs_length 3840 --max_images 4
 
 done
 
