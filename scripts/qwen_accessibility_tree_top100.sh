@@ -1,9 +1,12 @@
 #!/bin/bash
 ### Run Qwen VL with accessibility_tree on the first 100 tasks of each VWA site type:
 ### classifieds, shopping, reddit.
-### Requires: export OPENAI_BASE_URL=https://openrouter.ai/api/v1 and OPENAI_API_KEY=<your_openrouter_key>
+### Requires: export OPENAI_BASE_URL and OPENAI_API_KEY (OpenRouter or Hyperbolic direct).
+### Optional: $1 = result_dir suffix (e.g. _hyperbolic → results_qwen_actree_classifieds_top100_hyperbolic).
+### Optional: export VWA_MODEL to override model.
 
-model="qwen/qwen-2.5-vl-7b-instruct"
+result_dir_suffix="${1:-}"
+model="${VWA_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}"
 instruction_path="agent/prompts/jsons/p_cot_id_actree_3s.json"
 observation_type="accessibility_tree"
 action_set_tag="id_accessibility_tree"
@@ -11,7 +14,7 @@ start_idx=0
 end_idx=100
 
 # --- Classifieds (top 100) ---
-result_dir="results_qwen_actree_classifieds_top100"
+result_dir="results_qwen_actree_classifieds_top100${result_dir_suffix}"
 bash prepare.sh
 python run.py \
   --instruction_path "$instruction_path" \
@@ -24,7 +27,7 @@ python run.py \
   --observation_type "$observation_type"
 
 # --- Shopping (top 100) ---
-result_dir="results_qwen_actree_shopping_top100"
+result_dir="results_qwen_actree_shopping_top100${result_dir_suffix}"
 bash prepare.sh
 python run.py \
   --instruction_path "$instruction_path" \
@@ -37,7 +40,7 @@ python run.py \
   --observation_type "$observation_type"
 
 # --- Reddit (top 100) ---
-result_dir="results_qwen_actree_reddit_top100"
+result_dir="results_qwen_actree_reddit_top100${result_dir_suffix}"
 bash prepare.sh
 python run.py \
   --instruction_path "$instruction_path" \
