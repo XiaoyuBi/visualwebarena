@@ -144,6 +144,12 @@ class StringEvaluator(Evaluator):
     fuzzy match: the answer is similar to the reference answer, using LLM judge
     """
 
+    def __init__(
+        self, eval_tag: str = "", eval_llm_model: str | None = None
+    ) -> None:
+        super().__init__(eval_tag=eval_tag)
+        self.eval_llm_model = eval_llm_model
+
     @staticmethod
     @beartype
     def clean_answer(answer: str) -> str:
@@ -192,13 +198,17 @@ class StringEvaluator(Evaluator):
 
     @staticmethod
     @beartype
-    def fuzzy_match(ref: str, pred: str, intent: str) -> float:
-        return llm_fuzzy_match(pred, ref, intent)
+    def fuzzy_match(
+        ref: str, pred: str, intent: str, model: str | None = None
+    ) -> float:
+        return llm_fuzzy_match(pred, ref, intent, model=model)
 
     @staticmethod
     @beartype
-    def ua_match(ref: str, pred: str, intent: str) -> float:
-        return llm_ua_match(pred, ref, intent)
+    def ua_match(
+        ref: str, pred: str, intent: str, model: str | None = None
+    ) -> float:
+        return llm_ua_match(pred, ref, intent, model=model)
 
     def __call__(
         self,
@@ -267,12 +277,16 @@ class StringEvaluator(Evaluator):
                                 intent=configs["intent"],
                                 ref=configs["eval"]["string_note"],
                                 pred=pred,
+                                model=self.eval_llm_model,
                             )
                     else:
                         assert isinstance(value, list)
                         for reference in value:
                             score *= self.fuzzy_match(
-                                ref=reference, pred=pred, intent=intent
+                                ref=reference,
+                                pred=pred,
+                                intent=intent,
+                                model=self.eval_llm_model,
                             )
         return score
 
@@ -625,7 +639,9 @@ class EvaluatorComb:
 
 @beartype
 def evaluator_router(
-    config_file: Path | str, captioning_fn=None
+    config_file: Path | str,
+    captioning_fn=None,
+    eval_llm_model: str | None = None,
 ) -> EvaluatorComb:
     """Router to get the evaluator class"""
     with open(config_file, "r") as f:
@@ -636,7 +652,9 @@ def evaluator_router(
     for eval_type in eval_types:
         match eval_type:
             case "string_match":
-                evaluators.append(StringEvaluator())
+                evaluators.append(
+                    StringEvaluator(eval_llm_model=eval_llm_model)
+                )
             case "url_match":
                 evaluators.append(URLExactEvaluator())
             case "program_html":

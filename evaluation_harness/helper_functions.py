@@ -1,8 +1,12 @@
 """Implements helper functions to assist evaluation cases where other evaluators are not suitable."""
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any, Union
 from urllib.parse import urlparse
+
+# Default LLM for fuzzy/UA evaluation when not overridden by --eval_model or EVAL_LLM_MODEL
+DEFAULT_EVAL_LLM_MODEL = "Qwen/Qwen2.5-72B-Instruct"
 
 import requests
 from beartype import beartype
@@ -576,9 +580,19 @@ def gitlab_get_project_memeber_role(
     return role
 
 
+def _get_eval_llm_model(override: str | None) -> str:
+    """Resolve evaluation LLM: override > EVAL_LLM_MODEL env > default."""
+    if override:
+        return override
+    return os.environ.get("EVAL_LLM_MODEL", DEFAULT_EVAL_LLM_MODEL)
+
+
 @beartype
-def llm_fuzzy_match(pred: str, reference: str, question: str) -> float:
-    """Check whether the prediction matches the reference with GPT-4-turbo"""
+def llm_fuzzy_match(
+    pred: str, reference: str, question: str, model: str | None = None
+) -> float:
+    """Check whether the prediction matches the reference using an LLM judge."""
+    model = _get_eval_llm_model(model)
     messages: list[dict[str, Any]] = []
     # construct the question to ask
     message = "Help a teacher to grade the answer of a student given a question. Keep in mind that the student may use different phrasing or wording to answer the question. The goal is to evaluate whether the answer is semantically equivalent to the reference answer.\n"
@@ -593,7 +607,7 @@ def llm_fuzzy_match(pred: str, reference: str, question: str) -> float:
     ]
 
     response = generate_from_openai_chat_completion(
-        model="gpt-4-1106-preview",
+        model=model,
         messages=messages,
         temperature=0,
         max_tokens=768,
@@ -607,8 +621,12 @@ def llm_fuzzy_match(pred: str, reference: str, question: str) -> float:
         return 1.0
 
 
-def llm_ua_match(pred: str, reference: str, question: str) -> float:
-    """Check whether the prediction matches the reference with GPT-4-turbo"""
+@beartype
+def llm_ua_match(
+    pred: str, reference: str, question: str, model: str | None = None
+) -> float:
+    """Check whether the prediction matches the reference using an LLM judge."""
+    model = _get_eval_llm_model(model)
     messages: list[dict[str, Any]] = []
     # construct the question to ask
     message = ""
@@ -628,7 +646,7 @@ def llm_ua_match(pred: str, reference: str, question: str) -> float:
     ]
 
     response = generate_from_openai_chat_completion(
-        model="gpt-4-1106-preview",
+        model=model,
         messages=messages,
         temperature=0,
         max_tokens=768,
