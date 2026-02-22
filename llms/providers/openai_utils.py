@@ -165,6 +165,36 @@ def generate_from_openai_completion(
     return answer
 
 
+# Reasoning models (gpt-5, o1, o3, o4-mini): use max_completion_tokens, reasoning_effort;
+# omit temperature/top_p. gpt-4o and older models use max_tokens, temperature, top_p.
+_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4-mini")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    return any(prefix in model for prefix in _REASONING_MODEL_PREFIXES)
+
+
+def _chat_completion_extra_params(
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> dict[str, Any]:
+    """Model-specific params for chat completions. Reasoning models omit temperature/top_p."""
+    params: dict[str, Any] = {}
+
+    if _is_reasoning_model(model):
+        params["max_completion_tokens"] = max_tokens
+        if "gpt-5-pro" not in model:
+            params["reasoning_effort"] = "low"
+    else:
+        params["max_tokens"] = max_tokens
+        params["temperature"] = temperature
+        params["top_p"] = top_p
+
+    return params
+
+
 async def _throttled_openai_chat_completion_acreate(
     model: str,
     messages: list[dict[str, str]],
@@ -179,9 +209,7 @@ async def _throttled_openai_chat_completion_acreate(
                 return await aclient.chat.completions.create(
                     model=model,
                     messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    top_p=top_p,
+                    **_chat_completion_extra_params(model, max_tokens, temperature, top_p),
                 )
             except openai.RateLimitError:
                 logging.warning(
@@ -257,9 +285,7 @@ def generate_from_openai_chat_completion(
     response = client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        top_p=top_p,
+        **_chat_completion_extra_params(model, max_tokens, temperature, top_p),
     )
     answer: str = response.choices[0].message.content
     return answer

@@ -73,12 +73,15 @@ pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-### 2.4 Fix BLIP-2 / Dependencies (transformers, tokenizers, torch, datasets)
+### 2.4 Fix BLIP-2 / Dependencies (transformers, tokenizers, torch, datasets, openai)
 
 ```bash
 pip install "transformers>=4.36.0" "tokenizers>=0.15.0"
 pip install "datasets>=2.18.0" "torch>=2.4.0"
+pip install "openai>=1.40.0"
 ```
+
+**Note:** `openai>=1.40.0` is required for GPT-5 models (supports `max_completion_tokens` and `reasoning_effort`).
 
 ### 2.5 Playwright Browser and Project Install
 
@@ -210,7 +213,7 @@ To open the AWS repo inside Cursor over SSH:
 |------|--------|
 | 1 | Create EC2: Ubuntu 22.04 LTS AMI, r6i.xlarge (or g4dn/g5 for GPU), 50 GiB storage, key pair |
 | 2 | SSH in and install Python 3.11, Playwright system deps, clone repo, venv, `pip install -r requirements.txt` |
-| 3 | Upgrade transformers, tokenizers, datasets, torch; `playwright install` + `install-deps`; `pip install -e .` |
+| 3 | Upgrade transformers, tokenizers, datasets, torch, openai; `playwright install` + `install-deps`; `pip install -e .` |
 | 4 | `python -c "import nltk; nltk.download('punkt')"` (required for evaluation) |
 | 5 | Set DATASET, CLASSIFIEDS, SHOPPING, REDDIT, WIKIPEDIA, HOMEPAGE, OPENAI_API_KEY |
 | 6 | `python scripts/generate_test_data.py` and `bash prepare.sh` |

@@ -119,6 +119,7 @@ class PromptAgent(Agent):
         is_vision_model = (
             "gemini" in lm_config.model
             or ("gpt-4" in lm_config.model and ("vision" in lm_config.model or "gpt-4o" in lm_config.model))
+            or "gpt-5" in lm_config.model
         )
         if is_vision_model and type(prompt_constructor) == MultimodalCoTPromptConstructor:
             self.multimodal_inputs = True
