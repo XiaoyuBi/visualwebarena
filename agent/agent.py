@@ -155,8 +155,9 @@ class PromptAgent(Agent):
                 # Update intent to include captions of input images.
                 intent = f"{image_input_caption}\nIntent: {intent}"
             elif not self.multimodal_inputs:
-                print(
-                    "WARNING: Input image provided but no image captioner available."
+                raise ValueError(
+                    "Input image provided but no image captioner available. "
+                    "Cannot process task - early stopping."
                 )
 
         if self.multimodal_inputs:

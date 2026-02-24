@@ -2,8 +2,6 @@
 
 ## Run Shopping idx 0-100 with gpt-5-mini: SoM, accessibility_tree, and image
 
-captioning_model="Salesforce/blip2-flan-t5-xl"
-
 # 1. SoM (image_som observation)
 model="gpt-5-mini"
 test_start_idx=0
@@ -18,7 +16,6 @@ python run.py \
   --result_dir $result_dir \
   --test_config_base_dir config_files/vwa/test_shopping \
   --repeating_action_failure_th 5 --viewport_height 2048 --max_obs_length 3840 --max_steps 15 \
-  --captioning_model $captioning_model \
   --action_set_tag som --observation_type image_som
 
 # 2. accessibility_tree only

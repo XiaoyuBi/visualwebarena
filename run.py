@@ -103,6 +103,12 @@ def config() -> argparse.Namespace:
     parser.add_argument("--sleep_after_execution", type=float, default=0.0)
 
     parser.add_argument("--max_steps", type=int, default=30)
+    parser.add_argument(
+        "--trajectory_timeout",
+        type=int,
+        default=300,
+        help="Fail the trajectory if the whole process exceeds this many seconds (default: 5 min).",
+    )
 
     # agent config
     parser.add_argument("--agent_type", type=str, default="prompt")
@@ -380,25 +386,30 @@ def test(
             state_info: StateInfo = {"observation": obs, "info": info}
             trajectory.append(state_info)
 
+            trajectory_start_time = time.time()
             meta_data = {"action_history": ["None"]}
             while True:
-                early_stop_flag, stop_info = early_stop(
-                    trajectory, max_steps, early_stop_thresholds
-                )
-
-                if early_stop_flag:
-                    action = create_stop_action(f"Early stop: {stop_info}")
+                if time.time() - trajectory_start_time > args.trajectory_timeout:
+                    action = create_stop_action(
+                        f"ERROR: Trajectory exceeded {args.trajectory_timeout}s timeout"
+                    )
                 else:
-                    try:
-                        action = agent.next_action(
-                            trajectory,
-                            intent,
-                            images=images,
-                            meta_data=meta_data,
-                        )
-                    except ValueError as e:
-                        # get the error message
-                        action = create_stop_action(f"ERROR: {str(e)}")
+                    early_stop_flag, stop_info = early_stop(
+                        trajectory, max_steps, early_stop_thresholds
+                    )
+
+                    if early_stop_flag:
+                        action = create_stop_action(f"Early stop: {stop_info}")
+                    else:
+                        try:
+                            action = agent.next_action(
+                                trajectory,
+                                intent,
+                                images=images,
+                                meta_data=meta_data,
+                            )
+                        except ValueError as e:
+                            action = create_stop_action(f"ERROR: {str(e)}")
 
                 trajectory.append(action)
 
@@ -532,7 +543,7 @@ if __name__ == "__main__":
     print(f"Total {len(test_file_list)} tasks left")
     args.render = False
     args.render_screenshot = True
-    args.save_trace_enabled = True
+    args.save_trace_enabled = False
 
     args.current_viewport_only = True
     dump_config(args)
