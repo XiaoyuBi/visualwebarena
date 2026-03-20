@@ -66,7 +66,10 @@ class TeacherForcingAgent(Agent):
             try:
                 if self.action_set_tag == "playwright":
                     cur_action = create_playwright_action(a_str)
-                elif self.action_set_tag == "id_accessibility_tree":
+                elif self.action_set_tag in [
+                    "id_accessibility_tree",
+                    "id_accessibility_tree_with_captioner",
+                ]:
                     cur_action = create_id_based_action(a_str)
                 else:
                     raise ValueError(
@@ -183,7 +186,10 @@ class PromptAgent(Agent):
                 parsed_response = self.prompt_constructor.extract_action(
                     response
                 )
-                if self.action_set_tag == "id_accessibility_tree":
+                if self.action_set_tag in [
+                    "id_accessibility_tree",
+                    "id_accessibility_tree_with_captioner",
+                ]:
                     action = create_id_based_action(parsed_response)
                 elif self.action_set_tag == "playwright":
                     action = create_playwright_action(parsed_response)
