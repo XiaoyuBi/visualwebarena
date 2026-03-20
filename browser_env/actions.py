@@ -1656,7 +1656,7 @@ def create_playwright_action(playwright_code: str) -> Action:
                 raise ActionParsingError(
                     f"Invalid type/fill action, required to be page.type(TEXT)"
                 )
-            text = match.group(1)
+            text = match.group(1) or ""
             return create_type_action(text=text, pw_code=playwright_code)
         case "select_option":
             return create_select_option_action(pw_code=playwright_code)
@@ -1693,7 +1693,7 @@ def create_playwright_action(playwright_code: str) -> Action:
             if not match:
                 answer = ""
             else:
-                answer = match.group(1)
+                answer = match.group(1) or ""
             return create_stop_action(answer)
 
     raise ActionParsingError(f"Unknown playwright action {action}")
