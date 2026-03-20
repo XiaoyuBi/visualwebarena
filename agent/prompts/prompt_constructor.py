@@ -328,8 +328,17 @@ class MultimodalCoTPromptConstructor(CoTPromptConstructor):
         current: str,
         page_screenshot_img: Image.Image,
         images: list[Image.Image],
+        max_images: int = 4,
     ) -> APIInput:
         """Return the require format for an API"""
+        # Cap total images to max_images.  Priority: screenshot > input images > examples.
+        n_screenshot = 1
+        budget = max_images - n_screenshot
+        n_input = min(len(images), budget)
+        n_examples = min(len(examples), budget - n_input)
+        images = images[:n_input]
+        examples = examples[:n_examples]
+
         message: list[dict[str, str]] | str | list[str | Image.Image]
         if "openai" in self.lm_config.provider:
             if self.lm_config.mode == "chat":
