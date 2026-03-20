@@ -147,12 +147,6 @@ def config() -> argparse.Namespace:
         choices=["Salesforce/blip2-flan-t5-xl", "llava-hf/llava-1.5-7b-hf"],
         help="Captioning backbone for accessibility tree alt text.",
     )
-    parser.add_argument(
-        "--eval_model",
-        type=str,
-        default="Qwen/Qwen2.5-72B-Instruct",
-        help="LLM model used for fuzzy/UA string evaluation (e.g. Qwen/Qwen2.5-72B-Instruct). Overridable by EVAL_LLM_MODEL.",
-    )
 
     # lm config
     parser.add_argument("--provider", type=str, default="openai")
@@ -435,9 +429,7 @@ def test(
 
             # NOTE: eval_caption_image_fn is used for running eval_vqa functions.
             evaluator = evaluator_router(
-                config_file,
-                captioning_fn=eval_caption_image_fn,
-                eval_llm_model=args.eval_model,
+                config_file, captioning_fn=eval_caption_image_fn
             )
             score = evaluator(
                 trajectory=trajectory,

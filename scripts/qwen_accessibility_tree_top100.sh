@@ -3,11 +3,10 @@
 ### classifieds, shopping, reddit.
 ### Requires: export OPENAI_BASE_URL and OPENAI_API_KEY (OpenRouter or Hyperbolic direct).
 ### Optional: $1 = result_dir suffix (e.g. _hyperbolic → results_qwen_actree_classifieds_top100_hyperbolic).
-### Optional: export VWA_MODEL to override model; export EVAL_LLM_MODEL for evaluation LLM (default Qwen/Qwen2.5-72B-Instruct).
+### Optional: export VWA_MODEL to override model.
 
 result_dir_suffix="${1:-}"
 model="${VWA_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}"
-eval_model="${EVAL_LLM_MODEL:-Qwen/Qwen2.5-72B-Instruct}"
 instruction_path="agent/prompts/jsons/p_cot_id_actree_3s.json"
 observation_type="accessibility_tree"
 action_set_tag="id_accessibility_tree"
@@ -22,7 +21,6 @@ python run.py \
   --test_start_idx $start_idx \
   --test_end_idx $end_idx \
   --model "$model" \
-  --eval_model "$eval_model" \
   --result_dir "$result_dir" \
   --test_config_base_dir=config_files/vwa/test_classifieds \
   --action_set_tag "$action_set_tag" \
@@ -36,7 +34,6 @@ python run.py \
   --test_start_idx $start_idx \
   --test_end_idx $end_idx \
   --model "$model" \
-  --eval_model "$eval_model" \
   --result_dir "$result_dir" \
   --test_config_base_dir=config_files/vwa/test_shopping \
   --action_set_tag "$action_set_tag" \
@@ -50,7 +47,6 @@ python run.py \
   --test_start_idx $start_idx \
   --test_end_idx $end_idx \
   --model "$model" \
-  --eval_model "$eval_model" \
   --result_dir "$result_dir" \
   --test_config_base_dir=config_files/vwa/test_reddit \
   --action_set_tag "$action_set_tag" \
