@@ -328,38 +328,71 @@ class MultimodalCoTPromptConstructor(CoTPromptConstructor):
         current: str,
         page_screenshot_img: Image.Image,
         images: list[Image.Image],
+        max_images: int = 4,
     ) -> APIInput:
         """Return the require format for an API"""
+        # Cap total images to max_images.  Priority: screenshot > input images > examples.
+        n_screenshot = 1
+        budget = max_images - n_screenshot
+        n_input = min(len(images), budget)
+        n_examples = min(len(examples), budget - n_input)
+        images = images[:n_input]
+        examples = examples[:n_examples]
+
         message: list[dict[str, str]] | str | list[str | Image.Image]
         if "openai" in self.lm_config.provider:
             if self.lm_config.mode == "chat":
+                # Check max images allowed (e.g. Hyperbolic limits to 4).
+                max_images = self.lm_config.gen_config.get("max_images", 0)
+                # Required images: 1 (current screenshot) + len(images) (task input).
+                required_images = 1 + len(images)
+                if max_images > 0:
+                    example_image_budget = max_images - required_images
+                else:
+                    example_image_budget = len(examples)
+
                 message = [
                     {
                         "role": "system",
                         "content": [{"type": "text", "text": intro}],
                     }
                 ]
-                for (x, y, z) in examples:
-                    example_img = Image.open(z)
-                    # OpenAI only allows image_url in messages with role "user"
-                    message.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": x},
-                                {
-                                    "type": "text",
-                                    "text": "IMAGES: (1) current page screenshot",
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": pil_to_b64(example_img)
+                for ex_i, (x, y, z) in enumerate(examples):
+                    # Include example image only if within budget.
+                    if ex_i < example_image_budget:
+                        example_img = Image.open(z)
+                        # OpenAI only allows image_url in messages with role "user"
+                        message.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": x},
+                                    {
+                                        "type": "text",
+                                        "text": "IMAGES: (1) current page screenshot",
                                     },
-                                },
-                            ],
-                        }
-                    )
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": pil_to_b64(example_img)
+                                        },
+                                    },
+                                ],
+                            }
+                        )
+                    else:
+                        message.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": x},
+                                    {
+                                        "type": "text",
+                                        "text": "(example screenshot omitted)",
+                                    },
+                                ],
+                            }
+                        )
                     message.append(
                         {
                             "role": "assistant",

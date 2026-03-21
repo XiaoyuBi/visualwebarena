@@ -66,7 +66,10 @@ class TeacherForcingAgent(Agent):
             try:
                 if self.action_set_tag == "playwright":
                     cur_action = create_playwright_action(a_str)
-                elif self.action_set_tag == "id_accessibility_tree":
+                elif self.action_set_tag in [
+                    "id_accessibility_tree",
+                    "id_accessibility_tree_with_captioner",
+                ]:
                     cur_action = create_id_based_action(a_str)
                 else:
                     raise ValueError(
@@ -116,10 +119,12 @@ class PromptAgent(Agent):
         self.captioning_fn = captioning_fn
 
         # Check if the model is multimodal (vision-capable).
+        model_lower = lm_config.model.lower()
         is_vision_model = (
-            "gemini" in lm_config.model
-            or ("gpt-4" in lm_config.model and ("vision" in lm_config.model or "gpt-4o" in lm_config.model))
-            or "gpt-5" in lm_config.model
+            "gemini" in model_lower
+            or ("gpt-4" in model_lower and ("vision" in model_lower or "gpt-4o" in model_lower))
+            or ("qwen" in model_lower and "vl" in model_lower)
+            or "gpt-5" in model_lower
         )
         if is_vision_model and type(prompt_constructor) == MultimodalCoTPromptConstructor:
             self.multimodal_inputs = True
@@ -183,7 +188,10 @@ class PromptAgent(Agent):
                 parsed_response = self.prompt_constructor.extract_action(
                     response
                 )
-                if self.action_set_tag == "id_accessibility_tree":
+                if self.action_set_tag in [
+                    "id_accessibility_tree",
+                    "id_accessibility_tree_with_captioner",
+                ]:
                     action = create_id_based_action(parsed_response)
                 elif self.action_set_tag == "playwright":
                     action = create_playwright_action(parsed_response)

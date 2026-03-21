@@ -41,7 +41,7 @@ def get_render_action(
 ) -> str:
     """Parse the predicted actions for rendering purpose. More comprehensive information"""
     match action_set_tag:
-        case "id_accessibility_tree":
+        case "id_accessibility_tree" | "id_accessibility_tree_with_captioner":
             text_meta_data = observation_metadata["text"]
             if action["element_id"] in text_meta_data["obs_nodes_info"]:
                 node_content = text_meta_data["obs_nodes_info"][
@@ -86,7 +86,7 @@ def get_action_description(
     May contain hint information to recover from the failures"""
 
     match action_set_tag:
-        case "id_accessibility_tree":
+        case "id_accessibility_tree" | "id_accessibility_tree_with_captioner":
             text_meta_data = observation_metadata["text"]
             if action["action_type"] in [
                 ActionTypes.CLICK,

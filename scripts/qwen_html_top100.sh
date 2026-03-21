@@ -1,0 +1,53 @@
+#!/bin/bash
+### Run Qwen VL with HTML-only observation (raw DOM, no image, no accessibility tree)
+### on the first 100 tasks of each VWA site type: classifieds, shopping, reddit.
+### Requires: export OPENAI_BASE_URL and OPENAI_API_KEY (OpenRouter or Hyperbolic direct).
+### Optional: $1 = result_dir suffix (e.g. _hyperbolic → results_qwen_html_classifieds_top100_hyperbolic).
+### Optional: export VWA_MODEL to override model.
+
+result_dir_suffix="${1:-}"
+model="${VWA_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}"
+instruction_path="agent/prompts/jsons/p_cot_playwright_html_3s.json"
+observation_type="html"
+action_set_tag="playwright"
+start_idx=0
+end_idx=100
+
+# --- Classifieds (top 100) ---
+result_dir="results_qwen_html_classifieds_top100${result_dir_suffix}"
+bash prepare.sh
+python run.py \
+  --instruction_path "$instruction_path" \
+  --test_start_idx $start_idx \
+  --test_end_idx $end_idx \
+  --model "$model" \
+  --result_dir "$result_dir" \
+  --test_config_base_dir=config_files/vwa/test_classifieds \
+  --action_set_tag "$action_set_tag" \
+  --observation_type "$observation_type"
+
+# --- Shopping (top 100) ---
+result_dir="results_qwen_html_shopping_top100${result_dir_suffix}"
+bash prepare.sh
+python run.py \
+  --instruction_path "$instruction_path" \
+  --test_start_idx $start_idx \
+  --test_end_idx $end_idx \
+  --model "$model" \
+  --result_dir "$result_dir" \
+  --test_config_base_dir=config_files/vwa/test_shopping \
+  --action_set_tag "$action_set_tag" \
+  --observation_type "$observation_type"
+
+# --- Reddit (top 100) ---
+result_dir="results_qwen_html_reddit_top100${result_dir_suffix}"
+bash prepare.sh
+python run.py \
+  --instruction_path "$instruction_path" \
+  --test_start_idx $start_idx \
+  --test_end_idx $end_idx \
+  --model "$model" \
+  --result_dir "$result_dir" \
+  --test_config_base_dir=config_files/vwa/test_reddit \
+  --action_set_tag "$action_set_tag" \
+  --observation_type "$observation_type"

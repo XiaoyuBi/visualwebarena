@@ -175,6 +175,12 @@ def config() -> argparse.Namespace:
         help="when not zero, will truncate the observation to this length before feeding to the model",
         default=3840,
     )
+    parser.add_argument(
+        "--max_images",
+        type=int,
+        help="max images per API request (0=unlimited). Example images are dropped first to stay within budget.",
+        default=0,
+    )
 
     # example config
     parser.add_argument("--test_start_idx", type=int, default=0)
@@ -455,6 +461,18 @@ def test(
                 logger.info(f"[Result] (PASS) {config_file} [Trajectory length: {trajectory_length}]")
             else:
                 logger.info(f"[Result] (FAIL) {config_file} [Trajectory length: {trajectory_length}]")
+
+            # Append per-task result for analysis (no need to parse logs)
+            results_csv = Path(args.result_dir) / "results.csv"
+            rd = _c.get("reasoning_difficulty", "")
+            vd = _c.get("visual_difficulty", "")
+            od = _c.get("overall_difficulty", "")
+            if not results_csv.exists():
+                results_csv.write_text(
+                    "task_id,score,trajectory_length,reasoning_difficulty,visual_difficulty,overall_difficulty\n"
+                )
+            with open(results_csv, "a") as f:
+                f.write(f"{task_id},{int(score)},{trajectory_length},{rd},{vd},{od}\n")
 
             if args.save_trace_enabled:
                 env.save_trace(
