@@ -4,8 +4,8 @@ from collections import Counter
 from pathlib import Path
 
 
-def compute_intrinsic_metric(folder: str) -> tuple[float, int]:
-    """Compute intrinsic revisitation metric from a folder of render HTML files.
+def compute_url_revisit_rate(folder: str) -> tuple[float, int]:
+    """Compute URL revisit rate from a folder of render HTML files.
 
     For each HTML file, extracts the trajectory (sequence of URLs visited),
     counts excess revisits (total visits minus 1 for each URL visited more
@@ -44,7 +44,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     folder = sys.argv[1]
-    ratio_sum, count = compute_intrinsic_metric(folder)
-    print(f"Sum of (revisit_ratio): {ratio_sum:.4f}")
-    print(f"Number of HTML files:   {count}")
-    print(f"Average revisit ratio:  {ratio_sum / count:.4f}" if count > 0 else "No HTML files found.")
+    ratio_sum, count = compute_url_revisit_rate(folder)
+    print(f"Sum of (url_revisit_rate): {ratio_sum:.4f}")
+    print(f"Number of HTML files:      {count}")
+    print(f"Average url_revisit_rate:  {ratio_sum / count:.4f}" if count > 0 else "No HTML files found.")
