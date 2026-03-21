@@ -1,0 +1,808 @@
+"""Evaluate vision capability of a web agent from VisualWebArena render HTML trajectories.
+
+For each step in a trajectory, uses GPT-5.4 as a multimodal judge to classify the
+agent's vision capability as GOOD, BAD, or NA.
+
+- GOOD: The step requires vision and the agent demonstrates correct visual understanding.
+- BAD:  The step requires vision but the agent's visual understanding is incorrect/absent.
+- NA:   The step does not require vision -- the action is fully determined by text observation.
+
+Usage examples::
+
+    # Inspect a single trajectory (detailed per-step JSON)
+    python intrinsic_metric/vision_capability.py --inspect results/reddit/reddit_gpt5mini_som_0_100/render_1.html
+
+    # Evaluate an entire folder of trajectories
+    python intrinsic_metric/vision_capability.py results/reddit/reddit_gpt5mini_som_0_100/
+
+    # Evaluate only the first 5 files in a folder
+    python intrinsic_metric/vision_capability.py results/shopping/shopping_gpt5mini_image_0_100/ --topk 5
+
+Environment: set EVAL_OPENAI_API_KEY (or OPENAI_API_KEY) before running.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import hashlib
+import json
+import logging
+import os
+import re
+import sys
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from openai import AsyncOpenAI, OpenAI
+
+METRIC_NAME = "vision_capability"
+
+# ---------------------------------------------------------------------------
+# HTML parsing
+# ---------------------------------------------------------------------------
+
+_NEW_PAGE_RE = re.compile(r"<h2>New Page</h2>", re.IGNORECASE)
+_CONFIG_PRE_RE = re.compile(r"<pre>(.*?)</pre>", re.DOTALL)
+_SCREENSHOT_RE = re.compile(
+    r"<img src='data:image/png;base64,([^']+)'", re.IGNORECASE
+)
+_STATE_OBV_RE = re.compile(
+    r"<div class='state_obv'><pre>(.*?)</pre>", re.DOTALL
+)
+_RAW_PREDICTION_RE = re.compile(
+    r"<div class='raw_parsed_prediction'[^>]*><pre>(.*?)</pre></div>", re.DOTALL
+)
+_PARSED_ACTION_RE = re.compile(
+    r"<div class='parsed_action'[^>]*><pre>(.*?)</pre></div>", re.DOTALL
+)
+_PREV_ACTION_RE = re.compile(
+    r"<div class='prev_action'[^>]*>(.*?)</div>", re.DOTALL
+)
+_URL_RE = re.compile(
+    r"<h3 class='url'><a href=[^>]+>URL:\s*(.*?)</a></h3>", re.IGNORECASE
+)
+
+
+@dataclass
+class TaskConfig:
+    intent: str
+    image_path: str | None
+    task_id: str
+    comments: str
+    raw_config: str
+
+
+@dataclass
+class StepData:
+    step_index: int
+    url: str
+    text_obs: str
+    screenshot_b64: str | None
+    prev_action: str
+    raw_prediction: str
+    parsed_action: str
+
+
+def parse_config(config_text: str) -> TaskConfig:
+    """Parse the config ``<pre>`` block into a TaskConfig."""
+    fields: dict[str, str] = {}
+    for line in config_text.strip().splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            fields[key.strip()] = value.strip()
+
+    image_raw = fields.get("image", "None")
+    if image_raw in ("None", "", "[]"):
+        image_path = None
+    elif image_raw.startswith("[") and image_raw.endswith("]"):
+        inner = image_raw[1:-1].strip().strip("'\"")
+        image_path = inner if inner else None
+    else:
+        image_path = image_raw
+
+    return TaskConfig(
+        intent=fields.get("intent", ""),
+        image_path=image_path,
+        task_id=fields.get("task_id", "unknown"),
+        comments=fields.get("comments", ""),
+        raw_config=config_text.strip(),
+    )
+
+
+def parse_render_html(html: str) -> tuple[TaskConfig, list[StepData]]:
+    """Parse a render HTML file into config + ordered list of per-step data."""
+    parts = _NEW_PAGE_RE.split(html)
+    if len(parts) < 2:
+        config_match = _CONFIG_PRE_RE.search(parts[0] if parts else "")
+        config = parse_config(config_match.group(1) if config_match else "")
+        return config, []
+
+    preamble = parts[0]
+    config_match = _CONFIG_PRE_RE.search(preamble)
+    config = parse_config(config_match.group(1) if config_match else "")
+
+    steps: list[StepData] = []
+    for i, block in enumerate(parts[1:]):
+        url_m = _URL_RE.search(block)
+        state_m = _STATE_OBV_RE.search(block)
+        screenshot_m = _SCREENSHOT_RE.search(block)
+        raw_pred_m = _RAW_PREDICTION_RE.search(block)
+        parsed_m = _PARSED_ACTION_RE.search(block)
+        prev_m = _PREV_ACTION_RE.search(block)
+
+        steps.append(
+            StepData(
+                step_index=i,
+                url=url_m.group(1).strip() if url_m else "",
+                text_obs=state_m.group(1).strip() if state_m else "",
+                screenshot_b64=screenshot_m.group(1) if screenshot_m else None,
+                prev_action=prev_m.group(1).strip() if prev_m else "",
+                raw_prediction=raw_pred_m.group(1).strip() if raw_pred_m else "",
+                parsed_action=parsed_m.group(1).strip() if parsed_m else "",
+            )
+        )
+
+    return config, steps
+
+
+# ---------------------------------------------------------------------------
+# GPT-5.4 judge prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
+You are an expert evaluator assessing a web browsing agent's **vision capability** \
+at a single step of a web task.
+
+You are given:
+1. The overall task the agent is trying to accomplish.
+2. A screenshot of the current web page the agent sees.
+3. The text-based observation (accessibility tree) available to the agent.
+4. The agent's reasoning and final action for this step.
+
+Your job is to judge whether this step **requires vision capability** and, if so, \
+whether the agent **correctly used visual understanding**.
+
+## Evaluation criteria
+
+- **NA**: This step does NOT require vision. The correct action can be fully \
+determined from the text observation (accessibility tree) alone. Examples: clicking \
+a link identifiable by its text label, typing into a text field, scrolling, \
+navigating to a URL, or any action where the accessibility tree provides all \
+necessary information.
+
+- **GOOD**: This step REQUIRES vision capability and the agent demonstrates \
+**correct** visual understanding. Examples: correctly identifying an item by its \
+visual appearance in a screenshot, reading text that is only visible in the image \
+but not in the accessibility tree, understanding spatial layout or visual cues \
+(colors, positions, images) to make the right decision.
+
+- **BAD**: This step REQUIRES vision capability but the agent demonstrates \
+**incorrect or absent** visual understanding. Examples: clicking the wrong image, \
+misidentifying a visual element, failing to notice visual cues that should inform \
+the action, or making an action that contradicts what the screenshot shows.
+
+## Rules
+- Output EXACTLY one of: GOOD, BAD, or NA.
+- First provide a brief reasoning (1-2 sentences), then output your verdict on a \
+new line in the format: **Verdict: GOOD**, **Verdict: BAD**, or **Verdict: NA**.
+- Focus only on vision capability. Do not judge the overall task strategy or \
+whether the action is optimal for other reasons.
+- If there is no screenshot available, output NA.
+"""
+
+MAX_TEXT_OBS_CHARS = 4000
+
+
+def _truncate_text_obs(text_obs: str) -> str:
+    """Truncate long accessibility-tree text while keeping head and tail."""
+    if len(text_obs) <= MAX_TEXT_OBS_CHARS:
+        return text_obs
+    half = MAX_TEXT_OBS_CHARS // 2
+    return text_obs[:half] + "\n... [truncated] ...\n" + text_obs[-half:]
+
+
+@dataclass
+class StepVerdict:
+    step_index: int
+    verdict: str  # GOOD, BAD, or NA
+    reasoning: str
+
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_task_image_b64(image_path: str) -> str | None:
+    """Load a task input image from disk and return its base64-encoded content."""
+    p = Path(image_path)
+    if not p.is_absolute():
+        p = _REPO_ROOT / p
+    if not p.is_file():
+        logging.warning("Task input image not found: %s", p)
+        return None
+    raw = p.read_bytes()
+    return base64.b64encode(raw).decode("ascii")
+
+
+def build_judge_messages(
+    config: TaskConfig,
+    step: StepData,
+    task_image_b64: str | None = None,
+) -> list[dict[str, Any]]:
+    """Build the OpenAI messages list for a single judge call."""
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+    ]
+
+    user_content: list[dict[str, Any]] = []
+
+    task_text = f"## Overall Task\n{config.intent}\n"
+    if config.comments:
+        task_text += f"**Task comments:** {config.comments}\n"
+    if config.image_path:
+        task_text += (
+            "(This task includes a reference input image, shown below.)\n"
+        )
+
+    task_text += (
+        f"\n## Current Step {step.step_index}\n"
+        f"**URL:** {step.url}\n\n"
+        f"**Text Observation (Accessibility Tree):**\n"
+        f"```\n{_truncate_text_obs(step.text_obs)}\n```\n\n"
+        f"**Previous Action:** {step.prev_action}\n\n"
+        f"**Agent's Reasoning and Action:**\n{step.raw_prediction}\n\n"
+        f"**Parsed Action:** {step.parsed_action}\n"
+    )
+
+    user_content.append({"type": "text", "text": task_text})
+
+    if task_image_b64:
+        user_content.append(
+            {"type": "text", "text": "Task reference input image:"}
+        )
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{task_image_b64}"
+                },
+            }
+        )
+
+    if step.screenshot_b64:
+        user_content.append(
+            {"type": "text", "text": "Current page screenshot:"}
+        )
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{step.screenshot_b64}"
+                },
+            }
+        )
+
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
+
+_VERDICT_RE = re.compile(r"\*\*Verdict:\s*(GOOD|BAD|NA)\*\*", re.IGNORECASE)
+
+
+def parse_verdict(response: str) -> tuple[str, str]:
+    """Extract ``(verdict, reasoning)`` from the judge response text."""
+    match = _VERDICT_RE.search(response)
+    if match:
+        verdict = match.group(1).upper()
+        reasoning = response[: match.start()].strip()
+        return verdict, reasoning
+
+    upper = response.strip().upper()
+    for token in ("GOOD", "BAD", "NA"):
+        if token in upper:
+            return token, response.strip()
+
+    logging.warning("Could not parse verdict from response: %s", response[:200])
+    return "NA", response.strip()
+
+
+# ---------------------------------------------------------------------------
+# OpenAI client + caching
+# ---------------------------------------------------------------------------
+
+
+def _get_api_key() -> str:
+    api_key = os.environ.get("EVAL_OPENAI_API_KEY") or os.environ.get(
+        "OPENAI_API_KEY"
+    )
+    if not api_key:
+        raise ValueError(
+            "Set EVAL_OPENAI_API_KEY or OPENAI_API_KEY environment variable."
+        )
+    return api_key
+
+
+def _make_client() -> OpenAI:
+    return OpenAI(api_key=_get_api_key(), base_url="https://api.openai.com/v1")
+
+
+def _make_async_client() -> AsyncOpenAI:
+    return AsyncOpenAI(api_key=_get_api_key(), base_url="https://api.openai.com/v1")
+
+
+def _content_hash(step: StepData) -> str:
+    """Hash step content for cache keying (deterministic, fast)."""
+    h = hashlib.sha256()
+    h.update(step.text_obs.encode("utf-8", errors="replace"))
+    h.update(step.raw_prediction.encode("utf-8", errors="replace"))
+    h.update(step.parsed_action.encode("utf-8", errors="replace"))
+    if step.screenshot_b64:
+        h.update(step.screenshot_b64[:2000].encode("ascii"))
+    return h.hexdigest()[:16]
+
+
+def _cache_key(html_path: Path, step: StepData) -> str:
+    path_hash = hashlib.sha256(
+        str(html_path.resolve()).encode()
+    ).hexdigest()[:12]
+    return f"{path_hash}__{html_path.name}__step{step.step_index}__{_content_hash(step)}"
+
+
+def load_cache(cache_dir: Path) -> dict[str, dict[str, Any]]:
+    """Load all cached verdicts from *cache_dir*."""
+    cache: dict[str, dict[str, Any]] = {}
+    if not cache_dir.is_dir():
+        return cache
+    for f in cache_dir.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "cache_key" in data:
+                cache[data["cache_key"]] = data
+        except Exception:
+            continue
+    return cache
+
+
+def save_cache_entry(
+    cache_dir: Path, key: str, verdict: StepVerdict
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "cache_key": key,
+        "step_index": verdict.step_index,
+        "verdict": verdict.verdict,
+        "reasoning": verdict.reasoning,
+    }
+    (cache_dir / f"{key}.json").write_text(
+        json.dumps(entry, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def judge_step(
+    client: OpenAI,
+    model: str,
+    config: TaskConfig,
+    step: StepData,
+    task_image_b64: str | None = None,
+) -> StepVerdict:
+    """Call the judge model to evaluate a single step's vision capability."""
+    if not step.screenshot_b64:
+        return StepVerdict(
+            step.step_index, "NA", "No screenshot available for this step."
+        )
+
+    messages = build_judge_messages(config, step, task_image_b64)
+    response = client.chat.completions.create(
+        model=model,
+        reasoning_effort="medium",
+        max_completion_tokens=1024,
+        messages=messages,
+    )
+    text = response.choices[0].message.content or ""
+    verdict, reasoning = parse_verdict(text)
+    return StepVerdict(step.step_index, verdict, reasoning)
+
+
+def evaluate_file(
+    html_path: Path,
+    client: OpenAI | None,
+    model: str,
+    cache_dir: Path,
+    cache: dict[str, dict[str, Any]],
+) -> tuple[TaskConfig, list[StepVerdict]]:
+    """Evaluate every step in one render HTML file, using cache when available.
+
+    If no step has a screenshot, all steps are trivially NA (no vision data to
+    judge) -- no API calls or caching needed.
+    """
+    html = html_path.read_text(encoding="utf-8", errors="replace")
+    config, steps = parse_render_html(html)
+
+    has_any_screenshot = any(s.screenshot_b64 for s in steps)
+    if not has_any_screenshot:
+        verdicts = [
+            StepVerdict(s.step_index, "NA", "No screenshots in this trajectory.")
+            for s in steps
+        ]
+        return config, verdicts
+
+    task_image_b64: str | None = None
+    if config.image_path:
+        task_image_b64 = _load_task_image_b64(config.image_path)
+
+    verdicts: list[StepVerdict] = []
+    for step in steps:
+        key = _cache_key(html_path, step)
+        if key in cache:
+            c = cache[key]
+            verdicts.append(
+                StepVerdict(c["step_index"], c["verdict"], c["reasoning"])
+            )
+            continue
+
+        assert client is not None, (
+            "OpenAI client required for steps with screenshots"
+        )
+        v = judge_step(client, model, config, step, task_image_b64)
+        verdicts.append(v)
+        save_cache_entry(cache_dir, key, v)
+        cache[key] = {
+            "cache_key": key,
+            "step_index": v.step_index,
+            "verdict": v.verdict,
+            "reasoning": v.reasoning,
+        }
+
+    return config, verdicts
+
+
+# ---------------------------------------------------------------------------
+# Async variants (for concurrent folder evaluation)
+# ---------------------------------------------------------------------------
+
+
+async def async_judge_step(
+    aclient: AsyncOpenAI,
+    model: str,
+    config: TaskConfig,
+    step: StepData,
+    task_image_b64: str | None = None,
+) -> StepVerdict:
+    """Async version of :func:`judge_step`."""
+    if not step.screenshot_b64:
+        return StepVerdict(
+            step.step_index, "NA", "No screenshot available for this step."
+        )
+
+    messages = build_judge_messages(config, step, task_image_b64)
+    response = await aclient.chat.completions.create(
+        model=model,
+        reasoning_effort="medium",
+        max_completion_tokens=1024,
+        messages=messages,
+    )
+    text = response.choices[0].message.content or ""
+    verdict, reasoning = parse_verdict(text)
+    return StepVerdict(step.step_index, verdict, reasoning)
+
+
+async def async_evaluate_file(
+    html_path: Path,
+    aclient: AsyncOpenAI,
+    model: str,
+    cache_dir: Path,
+    cache: dict[str, dict[str, Any]],
+    semaphore: asyncio.Semaphore,
+) -> tuple[TaskConfig, list[StepVerdict]]:
+    """Async version of :func:`evaluate_file`.
+
+    The *semaphore* limits how many files are evaluated concurrently.
+    """
+    async with semaphore:
+        logging.info("Processing %s ...", html_path.name)
+        html = html_path.read_text(encoding="utf-8", errors="replace")
+        config, steps = parse_render_html(html)
+
+        has_any_screenshot = any(s.screenshot_b64 for s in steps)
+        if not has_any_screenshot:
+            verdicts = [
+                StepVerdict(
+                    s.step_index, "NA", "No screenshots in this trajectory."
+                )
+                for s in steps
+            ]
+            return config, verdicts
+
+        task_image_b64: str | None = None
+        if config.image_path:
+            task_image_b64 = _load_task_image_b64(config.image_path)
+
+        verdicts: list[StepVerdict] = []
+        for step in steps:
+            key = _cache_key(html_path, step)
+            if key in cache:
+                c = cache[key]
+                verdicts.append(
+                    StepVerdict(
+                        c["step_index"], c["verdict"], c["reasoning"]
+                    )
+                )
+                continue
+
+            v = await async_judge_step(
+                aclient, model, config, step, task_image_b64
+            )
+            verdicts.append(v)
+            save_cache_entry(cache_dir, key, v)
+            cache[key] = {
+                "cache_key": key,
+                "step_index": v.step_index,
+                "verdict": v.verdict,
+                "reasoning": v.reasoning,
+            }
+
+        return config, verdicts
+
+
+# ---------------------------------------------------------------------------
+# Aggregation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TrajectoryResult:
+    file_path: Path
+    total_steps: int
+    vision_good: int
+    vision_bad: int
+    vision_na: int
+    step_verdicts: list[StepVerdict]
+
+
+def aggregate_verdicts(
+    file_path: Path, verdicts: list[StepVerdict]
+) -> TrajectoryResult:
+    good = sum(1 for v in verdicts if v.verdict == "GOOD")
+    bad = sum(1 for v in verdicts if v.verdict == "BAD")
+    na = sum(1 for v in verdicts if v.verdict == "NA")
+    total = len(verdicts)
+    assert good + bad + na == total, (
+        f"Counts don't sum: {good}+{bad}+{na} != {total}"
+    )
+    return TrajectoryResult(file_path, total, good, bad, na, verdicts)
+
+
+@dataclass
+class FolderResult:
+    total_steps: int
+    vision_good: int
+    vision_bad: int
+    vision_na: int
+    num_files: int
+    per_file: list[TrajectoryResult]
+
+
+def aggregate_folder(results: list[TrajectoryResult]) -> FolderResult:
+    return FolderResult(
+        total_steps=sum(r.total_steps for r in results),
+        vision_good=sum(r.vision_good for r in results),
+        vision_bad=sum(r.vision_bad for r in results),
+        vision_na=sum(r.vision_na for r in results),
+        num_files=len(results),
+        per_file=results,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Evaluate web agent vision capability from render_*.html files "
+            "using GPT-5.4 as a multimodal judge."
+        )
+    )
+    parser.add_argument(
+        "--inspect",
+        type=Path,
+        metavar="HTML",
+        default=None,
+        help="Single render_*.html file: evaluate and print detailed report.",
+    )
+    parser.add_argument(
+        "folder",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="Directory containing render_*.html files.",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gpt-5.4",
+        help="Judge model name (default: gpt-5.4).",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="Write report to this file.",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not write report files (only print to stdout).",
+    )
+    parser.add_argument(
+        "--topk",
+        type=int,
+        default=None,
+        metavar="K",
+        help="In folder mode, only process the first K render_*.html files.",
+    )
+    parser.add_argument(
+        "--concurrent",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Max concurrent file evaluations in folder mode (default: 5).",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent / "cache" / "vision_capability",
+        help=(
+            "Directory for caching per-step judgments "
+            "(default: intrinsic_metric/cache/vision_capability/)."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s: %(message)s"
+    )
+
+    client = _make_client()
+    cache = load_cache(args.cache_dir)
+
+    # ---- inspect mode (single file) ----
+    if args.inspect is not None:
+        html_path = args.inspect.expanduser().resolve()
+        if not html_path.is_file():
+            print(f"Error: not a file: {html_path}", file=sys.stderr)
+            return 1
+
+        config, verdicts = evaluate_file(
+            html_path, client, args.model, args.cache_dir, cache
+        )
+        traj = aggregate_verdicts(html_path, verdicts)
+        generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        json_data = {
+            "generated": generated,
+            "file": str(html_path),
+            "intent": config.intent,
+            "task_image": config.image_path,
+            "total_steps": traj.total_steps,
+            "vision_good": traj.vision_good,
+            "vision_bad": traj.vision_bad,
+            "vision_na": traj.vision_na,
+            "steps": [asdict(v) for v in traj.step_verdicts],
+        }
+
+        print(json.dumps(json_data, ensure_ascii=False, indent=2))
+
+        if not args.no_save:
+            out_path = args.output or (
+                Path(__file__).resolve().parent
+                / "results"
+                / f"{METRIC_NAME}_inspect_{html_path.stem}.json"
+            )
+            out_path = out_path.expanduser().resolve()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(
+                json.dumps(json_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            print(f"Wrote inspect JSON to: {out_path}", file=sys.stderr)
+
+        return 0
+
+    # ---- folder mode ----
+    if args.folder is None:
+        parser.error(
+            "the following arguments are required: folder (unless using --inspect)"
+        )
+
+    folder = args.folder.expanduser().resolve()
+    if not folder.is_dir():
+        print(f"Error: not a directory: {folder}", file=sys.stderr)
+        return 1
+
+    html_files = sorted(folder.glob("render_*.html"))
+    if not html_files:
+        print(f"No render_*.html files found in {folder}", file=sys.stderr)
+        return 1
+
+    if args.topk is not None:
+        html_files = html_files[: args.topk]
+
+    aclient = _make_async_client()
+    semaphore = asyncio.Semaphore(args.concurrent)
+
+    async def _run_all() -> list[tuple[Path, TaskConfig, list[StepVerdict]]]:
+        tasks = [
+            _eval_one(f, aclient, args.model, args.cache_dir, cache, semaphore)
+            for f in html_files
+        ]
+        return await asyncio.gather(*tasks)
+
+    async def _eval_one(
+        f: Path,
+        ac: AsyncOpenAI,
+        model: str,
+        cd: Path,
+        c: dict[str, dict[str, Any]],
+        sem: asyncio.Semaphore,
+    ) -> tuple[Path, TaskConfig, list[StepVerdict]]:
+        cfg, verdicts = await async_evaluate_file(f, ac, model, cd, c, sem)
+        return f, cfg, verdicts
+
+    raw_results = asyncio.run(_run_all())
+
+    results: list[TrajectoryResult] = []
+    for html_f, _cfg, verdicts in raw_results:
+        traj = aggregate_verdicts(html_f, verdicts)
+        results.append(traj)
+
+    folder_result = aggregate_folder(results)
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    json_data = {
+        "generated": generated,
+        "folder": str(folder),
+        "total_steps": folder_result.total_steps,
+        "vision_good": folder_result.vision_good,
+        "vision_bad": folder_result.vision_bad,
+        "vision_na": folder_result.vision_na,
+        "num_files": folder_result.num_files,
+        "per_file": [
+            {
+                "file": str(r.file_path),
+                "total_steps": r.total_steps,
+                "vision_good": r.vision_good,
+                "vision_bad": r.vision_bad,
+                "vision_na": r.vision_na,
+            }
+            for r in folder_result.per_file
+        ],
+    }
+
+    print(json.dumps(json_data, ensure_ascii=False, indent=2))
+
+    if not args.no_save:
+        out_path = args.output or (
+            Path(__file__).resolve().parent
+            / "results"
+            / f"{METRIC_NAME}_{folder.name}.json"
+        )
+        out_path = out_path.expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(json_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"Wrote JSON summary to: {out_path}", file=sys.stderr)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
