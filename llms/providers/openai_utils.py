@@ -14,6 +14,13 @@ from openai import AsyncOpenAI, OpenAI
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], base_url=os.environ.get("OPENAI_BASE_URL"))
 aclient = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"], base_url=os.environ.get("OPENAI_BASE_URL"))
+
+# Separate client for evaluation (GPT-4 scoring) — uses OpenAI directly
+_eval_api_key = os.environ.get("EVAL_OPENAI_API_KEY")
+if _eval_api_key:
+    eval_client = OpenAI(api_key=_eval_api_key, base_url="https://api.openai.com/v1")
+else:
+    eval_client = client
 from tqdm.asyncio import tqdm_asyncio
 
 
@@ -255,6 +262,28 @@ def generate_from_openai_chat_completion(
             "OPENAI_API_KEY environment variable must be set when using OpenAI API."
         )
     response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        top_p=top_p,
+    )
+    answer: str = response.choices[0].message.content
+    return answer
+
+
+@retry_with_exponential_backoff
+def generate_from_openai_eval_chat_completion(
+    messages: list[dict[str, str]],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    top_p: float,
+    context_length: int,
+    stop_token: str | None = None,
+) -> str:
+    """Like generate_from_openai_chat_completion but uses eval_client (OpenAI)."""
+    response = eval_client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=temperature,

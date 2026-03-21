@@ -342,33 +342,57 @@ class MultimodalCoTPromptConstructor(CoTPromptConstructor):
         message: list[dict[str, str]] | str | list[str | Image.Image]
         if "openai" in self.lm_config.provider:
             if self.lm_config.mode == "chat":
+                # Check max images allowed (e.g. Hyperbolic limits to 4).
+                max_images = self.lm_config.gen_config.get("max_images", 0)
+                # Required images: 1 (current screenshot) + len(images) (task input).
+                required_images = 1 + len(images)
+                if max_images > 0:
+                    example_image_budget = max_images - required_images
+                else:
+                    example_image_budget = len(examples)
+
                 message = [
                     {
                         "role": "system",
                         "content": [{"type": "text", "text": intro}],
                     }
                 ]
-                for (x, y, z) in examples:
-                    example_img = Image.open(z)
-                    # OpenAI only allows image_url in messages with role "user"
-                    message.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": x},
-                                {
-                                    "type": "text",
-                                    "text": "IMAGES: (1) current page screenshot",
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": pil_to_b64(example_img)
+                for ex_i, (x, y, z) in enumerate(examples):
+                    # Include example image only if within budget.
+                    if ex_i < example_image_budget:
+                        example_img = Image.open(z)
+                        # OpenAI only allows image_url in messages with role "user"
+                        message.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": x},
+                                    {
+                                        "type": "text",
+                                        "text": "IMAGES: (1) current page screenshot",
                                     },
-                                },
-                            ],
-                        }
-                    )
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": pil_to_b64(example_img)
+                                        },
+                                    },
+                                ],
+                            }
+                        )
+                    else:
+                        message.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": x},
+                                    {
+                                        "type": "text",
+                                        "text": "(example screenshot omitted)",
+                                    },
+                                ],
+                            }
+                        )
                     message.append(
                         {
                             "role": "assistant",
