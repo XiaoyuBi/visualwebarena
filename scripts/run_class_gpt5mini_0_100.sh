@@ -6,7 +6,7 @@
 model="gpt-5-mini"
 test_start_idx=0
 test_end_idx=100
-result_dir="classifieds_gpt5mini_som_0_100"
+result_dir="results/classifieds/classifieds_gpt5mini_som_0_100_1"
 instruction_path="agent/prompts/jsons/p_som_cot_id_actree_3s.json"
 python run.py \
   --instruction_path $instruction_path \
@@ -16,14 +16,13 @@ python run.py \
   --result_dir $result_dir \
   --test_config_base_dir config_files/vwa/test_classifieds \
   --repeating_action_failure_th 5 --viewport_height 2048 --max_obs_length 3840 --max_steps 15 \
-  --captioning_model $captioning_model \
   --action_set_tag som --observation_type image_som
 
 # 2. accessibility_tree only
 model="gpt-5-mini"
 test_start_idx=0
 test_end_idx=100
-result_dir="classifieds_gpt5mini_actree_0_100"
+result_dir="results/classifieds/classifieds_gpt5mini_actree_0_100_1"
 instruction_path="agent/prompts/jsons/p_cot_id_actree_3s.json"
 python run.py \
   --instruction_path $instruction_path \
@@ -39,7 +38,7 @@ python run.py \
 model="gpt-5-mini"
 test_start_idx=0
 test_end_idx=100
-result_dir="classifieds_gpt5mini_image_0_100"
+result_dir="results/classifieds/classifieds_gpt5mini_image_0_100_1"
 instruction_path="agent/prompts/jsons/p_som_cot_id_actree_3s.json"
 python run.py \
   --instruction_path $instruction_path \

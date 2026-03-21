@@ -6,7 +6,7 @@
 model="gpt-5-mini"
 test_start_idx=0
 test_end_idx=100
-result_dir="shopping_gpt5mini_som_0_100"
+result_dir="results/shopping/shopping_gpt5mini_som_0_100_1"
 instruction_path="agent/prompts/jsons/p_som_cot_id_actree_3s.json"
 python run.py \
   --instruction_path $instruction_path \
@@ -22,7 +22,7 @@ python run.py \
 model="gpt-5-mini"
 test_start_idx=0
 test_end_idx=100
-result_dir="shopping_gpt5mini_actree_0_100"
+result_dir="results/shopping/shopping_gpt5mini_actree_0_100_1"
 instruction_path="agent/prompts/jsons/p_cot_id_actree_3s.json"
 python run.py \
   --instruction_path $instruction_path \
@@ -38,7 +38,7 @@ python run.py \
 model="gpt-5-mini"
 test_start_idx=0
 test_end_idx=100
-result_dir="shopping_gpt5mini_image_0_100"
+result_dir="results/shopping/shopping_gpt5mini_image_0_100_1"
 instruction_path="agent/prompts/jsons/p_som_cot_id_actree_3s.json"
 python run.py \
   --instruction_path $instruction_path \

@@ -106,8 +106,8 @@ def config() -> argparse.Namespace:
     parser.add_argument(
         "--trajectory_timeout",
         type=int,
-        default=300,
-        help="Fail the trajectory if the whole process exceeds this many seconds (default: 5 min).",
+        default=600,
+        help="Fail the trajectory if the whole process exceeds this many seconds (default: 10 min).",
     )
 
     # agent config
@@ -543,7 +543,7 @@ if __name__ == "__main__":
     print(f"Total {len(test_file_list)} tasks left")
     args.render = False
     args.render_screenshot = True
-    args.save_trace_enabled = False
+    args.save_trace_enabled = True
 
     args.current_viewport_only = True
     dump_config(args)
