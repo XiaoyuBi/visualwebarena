@@ -124,6 +124,7 @@ class PromptAgent(Agent):
             "gemini" in model_lower
             or ("gpt-4" in model_lower and ("vision" in model_lower or "gpt-4o" in model_lower))
             or ("qwen" in model_lower and "vl" in model_lower)
+            or "gpt-5" in model_lower
         )
         if is_vision_model and type(prompt_constructor) == MultimodalCoTPromptConstructor:
             self.multimodal_inputs = True
@@ -159,8 +160,9 @@ class PromptAgent(Agent):
                 # Update intent to include captions of input images.
                 intent = f"{image_input_caption}\nIntent: {intent}"
             elif not self.multimodal_inputs:
-                print(
-                    "WARNING: Input image provided but no image captioner available."
+                raise ValueError(
+                    "Input image provided but no image captioner available. "
+                    "Cannot process task - early stopping."
                 )
 
         if self.multimodal_inputs:
