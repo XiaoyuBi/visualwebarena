@@ -1,6 +1,6 @@
 """Evaluate vision capability of a web agent from VisualWebArena render HTML trajectories.
 
-For each step in a trajectory, uses GPT-5.4 as a multimodal judge to classify the
+For each step in a trajectory, uses GPT-5.2 as a multimodal judge to classify the
 agent's vision capability as GOOD, BAD, or NA.
 
 - GOOD: The step requires vision and the agent demonstrates correct visual understanding.
@@ -34,8 +34,8 @@ Environment: set EVAL_OPENAI_API_KEY (or OPENAI_API_KEY) before running.
 If a step has no screenshot in the HTML, that step is scored NA and the judge is
 not called for it.
 
-**API cost:** Images sent to the judge are downscaled to max width 720px (aspect
-ratio preserved) to lower billed vision/input tokens. User message parts are ordered
+**API cost:** Images sent to the judge are downscaled so the **longer edge** is at
+most 720px (aspect ratio preserved) to lower billed vision/input tokens. User message parts are ordered
 so the **same task-level prefix** is reused across steps, which lets the provider
 charge **cached input** rates for that prefix when applicable. Verdict JSON under
 ``--cache-dir`` skips paying for a **second** judge API call when step content
@@ -64,8 +64,8 @@ from PIL import Image
 
 METRIC_NAME = "vision_capability"
 
-# Max width for judge-bound images — lowers **API** billed vision/input tokens.
-JUDGE_IMAGE_MAX_WIDTH = 720
+# Longer side (width or height) of judge-bound images — lowers **API** vision tokens.
+JUDGE_IMAGE_MAX_EDGE_PX = 720
 
 # ---------------------------------------------------------------------------
 # HTML parsing
@@ -176,7 +176,7 @@ def parse_render_html(html: str) -> tuple[TaskConfig, list[StepData]]:
 
 
 # ---------------------------------------------------------------------------
-# GPT-5.4 judge prompt
+# GPT-5.2 judge prompt
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
@@ -191,7 +191,8 @@ You are given:
 5. The agent's reasoning and final action for this step.
 
 Your job is to judge whether this step **requires vision capability** and, if so, \
-whether the agent **correctly used visual understanding**.
+whether the agent **correctly used visual understanding** not only on the screenshot, \
+but also on the reference image if it is present.
 
 ## Evaluation criteria
 
@@ -200,7 +201,8 @@ and sufficient, the correct action follows from that text (plus URL, task wordin
 etc.) alone — e.g. clicking a link by its label, typing in a named field, scrolling, \
 or navigating by URL. When the tree is **absent or empty**, NA is rare: use it only \
 if the step still does not require interpreting pixels in the screenshot; otherwise \
-prefer GOOD or BAD.
+prefer GOOD or BAD. When a reference image is present, it is certain that vision is \
+required for some but not necessarily all steps.
 
 - **GOOD**: This step REQUIRES vision capability and the agent demonstrates \
 **correct** visual understanding. Examples: correctly identifying an item by its \
@@ -260,8 +262,10 @@ class StepVerdict:
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _resize_image_b64_to_max_width(b64: str, max_width: int = JUDGE_IMAGE_MAX_WIDTH) -> str:
-    """Downscale wide images to reduce **API** vision/input tokens; else unchanged.
+def _resize_image_b64_max_edge(
+    b64: str, max_edge_px: int = JUDGE_IMAGE_MAX_EDGE_PX
+) -> str:
+    """Downscale so ``max(width,height) <= max_edge_px`` to reduce **API** vision tokens.
 
     Returns base64-encoded PNG suitable for ``data:image/png;base64,...``.
     """
@@ -277,10 +281,13 @@ def _resize_image_b64_to_max_width(b64: str, max_width: int = JUDGE_IMAGE_MAX_WI
         buf = io.BytesIO(raw)
         with Image.open(buf) as im:
             w, h = im.size
-            if w <= max_width:
+            long_edge = max(w, h)
+            if long_edge <= max_edge_px:
                 return b64
-            new_h = max(1, int(round(h * max_width / w)))
-            resized = im.resize((max_width, new_h), Image.Resampling.LANCZOS)
+            scale = max_edge_px / long_edge
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+            resized = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
             out = io.BytesIO()
             resized.save(out, format="PNG", optimize=True)
             return base64.b64encode(out.getvalue()).decode("ascii")
@@ -317,7 +324,7 @@ def build_judge_messages(
     **API cost:** ``content`` parts are ordered so the trajectory-constant prefix
     (static task text + optional reference image) is identical on every step, which
     enables cheaper **cached** input pricing on that prefix when the provider
-    applies it. Images are resized to ``JUDGE_IMAGE_MAX_WIDTH`` before sending to
+    applies it. Images are resized so the longer edge is at most ``JUDGE_IMAGE_MAX_EDGE_PX`` before sending to
     reduce billed vision tokens.
 
     *text_obs_max_chars* caps the accessibility-tree block (default
@@ -342,7 +349,7 @@ def build_judge_messages(
     user_content.append({"type": "text", "text": static_task_text})
 
     if task_reference_image_b64:
-        ref_b64 = _resize_image_b64_to_max_width(task_reference_image_b64)
+        ref_b64 = _resize_image_b64_max_edge(task_reference_image_b64)
         user_content.append(
             {"type": "text", "text": "Task reference image (from disk, same every step):"}
         )
@@ -384,7 +391,7 @@ def build_judge_messages(
     user_content.append({"type": "text", "text": step_text})
 
     if step.screenshot_b64:
-        shot_b64 = _resize_image_b64_to_max_width(step.screenshot_b64)
+        shot_b64 = _resize_image_b64_max_edge(step.screenshot_b64)
         user_content.append(
             {
                 "type": "text",
@@ -405,20 +412,31 @@ def build_judge_messages(
 
 
 _VERDICT_RE = re.compile(r"\*\*Verdict:\s*(GOOD|BAD|NA)\*\*", re.IGNORECASE)
+# Plain ``Verdict: NA`` (no markdown) — use last match; must not use naive substring
+# search on GOOD/BAD/NA (e.g. the word "good" in "good strategy" breaks that).
+_PLAIN_VERDICT_RE = re.compile(r"(?i)Verdict:\s*(GOOD|BAD|NA)\b")
 
 
 def parse_verdict(response: str) -> tuple[str, str]:
-    """Extract ``(verdict, reasoning)`` from the judge response text."""
-    match = _VERDICT_RE.search(response)
-    if match:
-        verdict = match.group(1).upper()
-        reasoning = response[: match.start()].strip()
+    """Extract ``(verdict, reasoning)`` from the judge response text.
+
+    Uses the **last** ``**Verdict: …**`` if any; otherwise the last plain
+    ``Verdict: …`` line. (The model may revise; prose can contain words like
+    "good" that are not verdicts.)
+    """
+    bold = list(_VERDICT_RE.finditer(response))
+    if bold:
+        m = bold[-1]
+        verdict = m.group(1).upper()
+        reasoning = response[: m.start()].strip()
         return verdict, reasoning
 
-    upper = response.strip().upper()
-    for token in ("GOOD", "BAD", "NA"):
-        if token in upper:
-            return token, response.strip()
+    plain = list(_PLAIN_VERDICT_RE.finditer(response))
+    if plain:
+        m = plain[-1]
+        verdict = m.group(1).upper()
+        reasoning = response[: m.start()].strip()
+        return verdict, reasoning
 
     logging.warning("Could not parse verdict from response: %s", response[:200])
     return "NA", response.strip()
@@ -797,7 +815,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Evaluate web agent vision capability from render_*.html files "
-            "using GPT-5.4 as a multimodal judge."
+            "using GPT-5.2 as a multimodal judge."
         )
     )
     parser.add_argument(
@@ -823,8 +841,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-5.4",
-        help="Judge model name (default: gpt-5.4).",
+        default="gpt-5.2",
+        help="Judge model name (default: gpt-5.2).",
     )
     parser.add_argument(
         "-o",
