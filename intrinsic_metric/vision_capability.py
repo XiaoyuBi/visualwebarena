@@ -5,20 +5,41 @@ agent's vision capability as GOOD, BAD, or NA.
 
 - GOOD: The step requires vision and the agent demonstrates correct visual understanding.
 - BAD:  The step requires vision but the agent's visual understanding is incorrect/absent.
-- NA:   The step does not require vision -- the action is fully determined by text observation.
+- NA:   The step does not require vision -- non-visual signals suffice (e.g. a11y tree \
+when present); when the tree is empty, NA only if the step still does not require \
+pixel-level understanding.
 
 Usage examples::
 
     # Inspect a single trajectory (detailed per-step JSON)
-    python intrinsic_metric/vision_capability.py --inspect results/reddit/reddit_gpt5mini_som_0_100/render_1.html
+    python intrinsic_metric/vision_capability.py --inspect results/shopping/shopping_gpt5mini_som_0_100/render_11.html
 
     # Evaluate an entire folder of trajectories
     python intrinsic_metric/vision_capability.py results/reddit/reddit_gpt5mini_som_0_100/
 
     # Evaluate only the first 5 files in a folder
-    python intrinsic_metric/vision_capability.py results/shopping/shopping_gpt5mini_image_0_100/ --topk 5
+    python intrinsic_metric/vision_capability.py results/reddit/reddit_gpt5mini_som_0_100/ --topk 5
 
 Environment: set EVAL_OPENAI_API_KEY (or OPENAI_API_KEY) before running.
+
+**Two kinds of images** enter the judge prompt (assembled in ``build_judge_messages``):
+
+1. **Task reference image (optional):** from ``image`` in the render config, loaded
+   once from disk and **reused at every step** when present.
+2. **Per-step page screenshot (required for judging):** embedded in the HTML for
+   each step, **different every step** — this is the step's visual **input** the
+   metric evaluates against, along with the accessibility tree and other text **when
+   present** (pure image tasks may omit usable text).
+
+If a step has no screenshot in the HTML, that step is scored NA and the judge is
+not called for it.
+
+**API cost:** Images sent to the judge are downscaled to max width 720px (aspect
+ratio preserved) to lower billed vision/input tokens. User message parts are ordered
+so the **same task-level prefix** is reused across steps, which lets the provider
+charge **cached input** rates for that prefix when applicable. Verdict JSON under
+``--cache-dir`` skips paying for a **second** judge API call when step content
+unchanged. Nothing here optimizes local CPU, disk, or wall time beyond that goal.
 """
 
 from __future__ import annotations
@@ -27,6 +48,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import logging
 import os
@@ -38,8 +60,12 @@ from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAI
+from PIL import Image
 
 METRIC_NAME = "vision_capability"
+
+# Max width for judge-bound images — lowers **API** billed vision/input tokens.
+JUDGE_IMAGE_MAX_WIDTH = 720
 
 # ---------------------------------------------------------------------------
 # HTML parsing
@@ -159,26 +185,29 @@ at a single step of a web task.
 
 You are given:
 1. The overall task the agent is trying to accomplish.
-2. A screenshot of the current web page the agent sees.
-3. The text-based observation (accessibility tree) available to the agent.
-4. The agent's reasoning and final action for this step.
+2. Optionally, a fixed task reference image from the task definition (if the task includes one).
+3. The **per-step screenshot** of the current web page the agent sees — this is the primary visual state for the step and may differ from step to step.
+4. Optionally, the text-based observation (accessibility tree) available to the agent. It may be missing or empty in **pure image input** tasks.
+5. The agent's reasoning and final action for this step.
 
 Your job is to judge whether this step **requires vision capability** and, if so, \
 whether the agent **correctly used visual understanding**.
 
 ## Evaluation criteria
 
-- **NA**: This step does NOT require vision. The correct action can be fully \
-determined from the text observation (accessibility tree) alone. Examples: clicking \
-a link identifiable by its text label, typing into a text field, scrolling, \
-navigating to a URL, or any action where the accessibility tree provides all \
-necessary information.
+- **NA**: This step does NOT require vision. When an accessibility tree is present \
+and sufficient, the correct action follows from that text (plus URL, task wording, \
+etc.) alone — e.g. clicking a link by its label, typing in a named field, scrolling, \
+or navigating by URL. When the tree is **absent or empty**, NA is rare: use it only \
+if the step still does not require interpreting pixels in the screenshot; otherwise \
+prefer GOOD or BAD.
 
 - **GOOD**: This step REQUIRES vision capability and the agent demonstrates \
 **correct** visual understanding. Examples: correctly identifying an item by its \
 visual appearance in a screenshot, reading text that is only visible in the image \
 but not in the accessibility tree, understanding spatial layout or visual cues \
-(colors, positions, images) to make the right decision.
+(colors, positions, images) to make the right decision. Especially relevant when \
+the accessibility tree is missing or uninformative.
 
 - **BAD**: This step REQUIRES vision capability but the agent demonstrates \
 **incorrect or absent** visual understanding. Examples: clicking the wrong image, \
@@ -191,18 +220,34 @@ the action, or making an action that contradicts what the screenshot shows.
 new line in the format: **Verdict: GOOD**, **Verdict: BAD**, or **Verdict: NA**.
 - Focus only on vision capability. Do not judge the overall task strategy or \
 whether the action is optimal for other reasons.
-- If there is no screenshot available, output NA.
+- If there is no **per-step page screenshot** available for this step, output NA.
 """
 
 MAX_TEXT_OBS_CHARS = 4000
+# Second attempt after judge hits output/token limits (see ``_judge_output_limit_error``).
+MAX_TEXT_OBS_CHARS_RETRY = MAX_TEXT_OBS_CHARS // 2
 
 
-def _truncate_text_obs(text_obs: str) -> str:
+def _truncate_text_obs(
+    text_obs: str, max_chars: int | None = None
+) -> str:
     """Truncate long accessibility-tree text while keeping head and tail."""
-    if len(text_obs) <= MAX_TEXT_OBS_CHARS:
+    cap = max_chars if max_chars is not None else MAX_TEXT_OBS_CHARS
+    if len(text_obs) <= cap:
         return text_obs
-    half = MAX_TEXT_OBS_CHARS // 2
+    half = cap // 2
     return text_obs[:half] + "\n... [truncated] ...\n" + text_obs[-half:]
+
+
+def _judge_output_limit_error(exc: BaseException) -> bool:
+    """True when the API failed because completion hit max_tokens / output limit."""
+    s = str(exc).lower()
+    return (
+        "max_tokens" in s
+        or "output limit" in s
+        or "max_completion" in s
+        or "could not finish the message" in s
+    )
 
 
 @dataclass
@@ -215,8 +260,37 @@ class StepVerdict:
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _resize_image_b64_to_max_width(b64: str, max_width: int = JUDGE_IMAGE_MAX_WIDTH) -> str:
+    """Downscale wide images to reduce **API** vision/input tokens; else unchanged.
+
+    Returns base64-encoded PNG suitable for ``data:image/png;base64,...``.
+    """
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except Exception:
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            logging.warning("Invalid base64 for image resize; using original.")
+            return b64
+    try:
+        buf = io.BytesIO(raw)
+        with Image.open(buf) as im:
+            w, h = im.size
+            if w <= max_width:
+                return b64
+            new_h = max(1, int(round(h * max_width / w)))
+            resized = im.resize((max_width, new_h), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            resized.save(out, format="PNG", optimize=True)
+            return base64.b64encode(out.getvalue()).decode("ascii")
+    except Exception as e:
+        logging.warning("Image resize failed; using original: %s", e)
+        return b64
+
+
 def _load_task_image_b64(image_path: str) -> str | None:
-    """Load a task input image from disk and return its base64-encoded content."""
+    """Load the optional task **reference** image from disk (base64-encoded)."""
     p = Path(image_path)
     if not p.is_absolute():
         p = _REPO_ROOT / p
@@ -230,57 +304,98 @@ def _load_task_image_b64(image_path: str) -> str | None:
 def build_judge_messages(
     config: TaskConfig,
     step: StepData,
-    task_image_b64: str | None = None,
+    task_reference_image_b64: str | None = None,
+    text_obs_max_chars: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Build the OpenAI messages list for a single judge call."""
+    """Build the OpenAI messages list for a single judge call.
+
+    *task_reference_image_b64* is the optional fixed image from disk (same every
+    step). *step.screenshot_b64* is the per-step page screenshot from the render HTML.
+    If *step.text_obs* is empty after stripping, the user message states that the
+    accessibility tree was omitted (pure image input is possible).
+
+    **API cost:** ``content`` parts are ordered so the trajectory-constant prefix
+    (static task text + optional reference image) is identical on every step, which
+    enables cheaper **cached** input pricing on that prefix when the provider
+    applies it. Images are resized to ``JUDGE_IMAGE_MAX_WIDTH`` before sending to
+    reduce billed vision tokens.
+
+    *text_obs_max_chars* caps the accessibility-tree block (default
+    ``MAX_TEXT_OBS_CHARS``); lower values are used when retrying after output-limit
+    errors in ``judge_step`` / ``async_judge_step``.
+    """
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
     ]
 
     user_content: list[dict[str, Any]] = []
 
-    task_text = f"## Overall Task\n{config.intent}\n"
+    # --- Static per-trajectory prefix (same every step → API cached-prefix pricing) ---
+    static_task_text = f"## Overall Task\n{config.intent}\n"
     if config.comments:
-        task_text += f"**Task comments:** {config.comments}\n"
-    if config.image_path:
-        task_text += (
-            "(This task includes a reference input image, shown below.)\n"
+        static_task_text += f"**Task comments:** {config.comments}\n"
+    if task_reference_image_b64:
+        static_task_text += (
+            "(This task includes a fixed reference image from the task definition, "
+            "shown below before the step-specific section and per-step screenshot.)\n"
         )
+    user_content.append({"type": "text", "text": static_task_text})
 
-    task_text += (
-        f"\n## Current Step {step.step_index}\n"
-        f"**URL:** {step.url}\n\n"
-        f"**Text Observation (Accessibility Tree):**\n"
-        f"```\n{_truncate_text_obs(step.text_obs)}\n```\n\n"
-        f"**Previous Action:** {step.prev_action}\n\n"
-        f"**Agent's Reasoning and Action:**\n{step.raw_prediction}\n\n"
-        f"**Parsed Action:** {step.parsed_action}\n"
-    )
-
-    user_content.append({"type": "text", "text": task_text})
-
-    if task_image_b64:
+    if task_reference_image_b64:
+        ref_b64 = _resize_image_b64_to_max_width(task_reference_image_b64)
         user_content.append(
-            {"type": "text", "text": "Task reference input image:"}
+            {"type": "text", "text": "Task reference image (from disk, same every step):"}
         )
         user_content.append(
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/png;base64,{task_image_b64}"
+                    "url": f"data:image/png;base64,{ref_b64}"
                 },
             }
         )
 
+    # --- Step-specific suffix (varies each step) ---
+    obs = step.text_obs.strip()
+    tobs_cap = (
+        text_obs_max_chars
+        if text_obs_max_chars is not None
+        else MAX_TEXT_OBS_CHARS
+    )
+    if obs:
+        obs_block = (
+            f"**Text Observation (Accessibility Tree):**\n"
+            f"```\n{_truncate_text_obs(step.text_obs, tobs_cap)}\n```\n\n"
+        )
+    else:
+        obs_block = (
+            "**Text Observation (Accessibility Tree):** *(none — empty or omitted; "
+            "pure image input is possible.)*\n\n"
+        )
+
+    step_text = (
+        f"## Current Step {step.step_index}\n"
+        f"**URL:** {step.url}\n\n"
+        f"{obs_block}"
+        f"**Previous Action:** {step.prev_action}\n\n"
+        f"**Agent's Reasoning and Action:**\n{step.raw_prediction}\n\n"
+        f"**Parsed Action:** {step.parsed_action}\n"
+    )
+    user_content.append({"type": "text", "text": step_text})
+
     if step.screenshot_b64:
+        shot_b64 = _resize_image_b64_to_max_width(step.screenshot_b64)
         user_content.append(
-            {"type": "text", "text": "Current page screenshot:"}
+            {
+                "type": "text",
+                "text": "Per-step page screenshot (visual input for this step, from render HTML):",
+            }
         )
         user_content.append(
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/png;base64,{step.screenshot_b64}"
+                    "url": f"data:image/png;base64,{shot_b64}"
                 },
             }
         )
@@ -310,8 +425,12 @@ def parse_verdict(response: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI client + caching
+# OpenAI client + verdict store (skip duplicate judge **API** charges only)
 # ---------------------------------------------------------------------------
+# ``--cache-dir`` JSON: if a step was already judged for the same content, do not
+# call the API again.
+# Message layout in ``build_judge_messages``: shared task prefix before step-specific
+# text + screenshot so the provider can bill **cached** rates on that prefix (API $).
 
 
 def _get_api_key() -> str:
@@ -334,7 +453,7 @@ def _make_async_client() -> AsyncOpenAI:
 
 
 def _content_hash(step: StepData) -> str:
-    """Hash step content for cache keying (deterministic, fast)."""
+    """Hash step inputs so unchanged steps skip a repeat judge API call."""
     h = hashlib.sha256()
     h.update(step.text_obs.encode("utf-8", errors="replace"))
     h.update(step.raw_prediction.encode("utf-8", errors="replace"))
@@ -352,7 +471,7 @@ def _cache_key(html_path: Path, step: StepData) -> str:
 
 
 def load_cache(cache_dir: Path) -> dict[str, dict[str, Any]]:
-    """Load all cached verdicts from *cache_dir*."""
+    """Load verdict JSON so re-runs can avoid paying for duplicate judge API calls."""
     cache: dict[str, dict[str, Any]] = {}
     if not cache_dir.is_dir():
         return cache
@@ -369,6 +488,7 @@ def load_cache(cache_dir: Path) -> dict[str, dict[str, Any]]:
 def save_cache_entry(
     cache_dir: Path, key: str, verdict: StepVerdict
 ) -> None:
+    """Persist a verdict so the same step content need not invoke the API again."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     entry = {
         "cache_key": key,
@@ -386,24 +506,60 @@ def judge_step(
     model: str,
     config: TaskConfig,
     step: StepData,
-    task_image_b64: str | None = None,
+    task_reference_image_b64: str | None = None,
 ) -> StepVerdict:
-    """Call the judge model to evaluate a single step's vision capability."""
+    """Call the judge model to evaluate a single step's vision capability.
+
+    On API output-limit errors, retries once with half the a11y-tree char cap; then NA.
+    """
     if not step.screenshot_b64:
         return StepVerdict(
-            step.step_index, "NA", "No screenshot available for this step."
+            step.step_index,
+            "NA",
+            "No per-step page screenshot in render HTML for this step.",
         )
 
-    messages = build_judge_messages(config, step, task_image_b64)
-    response = client.chat.completions.create(
-        model=model,
-        reasoning_effort="medium",
-        max_completion_tokens=1024,
-        messages=messages,
+    for attempt in (1, 2):
+        cap = (
+            MAX_TEXT_OBS_CHARS
+            if attempt == 1
+            else MAX_TEXT_OBS_CHARS_RETRY
+        )
+        messages = build_judge_messages(
+            config, step, task_reference_image_b64, text_obs_max_chars=cap
+        )
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                reasoning_effort="medium",
+                max_completion_tokens=1024,
+                messages=messages,
+            )
+        except Exception as e:
+            if not _judge_output_limit_error(e):
+                raise
+            if attempt == 1:
+                logging.warning(
+                    "Judge hit output limit (step %s); retrying with shorter "
+                    "text observation (%s chars).",
+                    step.step_index,
+                    MAX_TEXT_OBS_CHARS_RETRY,
+                )
+                continue
+            return StepVerdict(
+                step.step_index,
+                "NA",
+                "Judge API output limit after truncation retry; scored NA.",
+            )
+        text = response.choices[0].message.content or ""
+        verdict, reasoning = parse_verdict(text)
+        return StepVerdict(step.step_index, verdict, reasoning)
+
+    return StepVerdict(
+        step.step_index,
+        "NA",
+        "Judge API output limit after truncation retry; scored NA.",
     )
-    text = response.choices[0].message.content or ""
-    verdict, reasoning = parse_verdict(text)
-    return StepVerdict(step.step_index, verdict, reasoning)
 
 
 def evaluate_file(
@@ -413,10 +569,11 @@ def evaluate_file(
     cache_dir: Path,
     cache: dict[str, dict[str, Any]],
 ) -> tuple[TaskConfig, list[StepVerdict]]:
-    """Evaluate every step in one render HTML file, using cache when available.
+    """Evaluate every step in one render HTML file.
 
-    If no step has a screenshot, all steps are trivially NA (no vision data to
-    judge) -- no API calls or caching needed.
+    Uses *cache* to skip judge **API** calls when a step's verdict is already stored.
+
+    If no step has a per-step screenshot, all steps are NA — no judge API calls.
     """
     html = html_path.read_text(encoding="utf-8", errors="replace")
     config, steps = parse_render_html(html)
@@ -429,9 +586,9 @@ def evaluate_file(
         ]
         return config, verdicts
 
-    task_image_b64: str | None = None
+    task_reference_image_b64: str | None = None
     if config.image_path:
-        task_image_b64 = _load_task_image_b64(config.image_path)
+        task_reference_image_b64 = _load_task_image_b64(config.image_path)
 
     verdicts: list[StepVerdict] = []
     for step in steps:
@@ -446,7 +603,9 @@ def evaluate_file(
         assert client is not None, (
             "OpenAI client required for steps with screenshots"
         )
-        v = judge_step(client, model, config, step, task_image_b64)
+        v = judge_step(
+            client, model, config, step, task_reference_image_b64
+        )
         verdicts.append(v)
         save_cache_entry(cache_dir, key, v)
         cache[key] = {
@@ -469,24 +628,57 @@ async def async_judge_step(
     model: str,
     config: TaskConfig,
     step: StepData,
-    task_image_b64: str | None = None,
+    task_reference_image_b64: str | None = None,
 ) -> StepVerdict:
     """Async version of :func:`judge_step`."""
     if not step.screenshot_b64:
         return StepVerdict(
-            step.step_index, "NA", "No screenshot available for this step."
+            step.step_index,
+            "NA",
+            "No per-step page screenshot in render HTML for this step.",
         )
 
-    messages = build_judge_messages(config, step, task_image_b64)
-    response = await aclient.chat.completions.create(
-        model=model,
-        reasoning_effort="medium",
-        max_completion_tokens=1024,
-        messages=messages,
+    for attempt in (1, 2):
+        cap = (
+            MAX_TEXT_OBS_CHARS
+            if attempt == 1
+            else MAX_TEXT_OBS_CHARS_RETRY
+        )
+        messages = build_judge_messages(
+            config, step, task_reference_image_b64, text_obs_max_chars=cap
+        )
+        try:
+            response = await aclient.chat.completions.create(
+                model=model,
+                reasoning_effort="medium",
+                max_completion_tokens=1024,
+                messages=messages,
+            )
+        except Exception as e:
+            if not _judge_output_limit_error(e):
+                raise
+            if attempt == 1:
+                logging.warning(
+                    "Judge hit output limit (step %s); retrying with shorter "
+                    "text observation (%s chars).",
+                    step.step_index,
+                    MAX_TEXT_OBS_CHARS_RETRY,
+                )
+                continue
+            return StepVerdict(
+                step.step_index,
+                "NA",
+                "Judge API output limit after truncation retry; scored NA.",
+            )
+        text = response.choices[0].message.content or ""
+        verdict, reasoning = parse_verdict(text)
+        return StepVerdict(step.step_index, verdict, reasoning)
+
+    return StepVerdict(
+        step.step_index,
+        "NA",
+        "Judge API output limit after truncation retry; scored NA.",
     )
-    text = response.choices[0].message.content or ""
-    verdict, reasoning = parse_verdict(text)
-    return StepVerdict(step.step_index, verdict, reasoning)
 
 
 async def async_evaluate_file(
@@ -497,9 +689,9 @@ async def async_evaluate_file(
     cache: dict[str, dict[str, Any]],
     semaphore: asyncio.Semaphore,
 ) -> tuple[TaskConfig, list[StepVerdict]]:
-    """Async version of :func:`evaluate_file`.
+    """Async version of :func:`evaluate_file` (same API-cost verdict cache).
 
-    The *semaphore* limits how many files are evaluated concurrently.
+    The *semaphore* limits concurrent files only (not an API-cost feature).
     """
     async with semaphore:
         logging.info("Processing %s ...", html_path.name)
@@ -516,9 +708,9 @@ async def async_evaluate_file(
             ]
             return config, verdicts
 
-        task_image_b64: str | None = None
+        task_reference_image_b64: str | None = None
         if config.image_path:
-            task_image_b64 = _load_task_image_b64(config.image_path)
+            task_reference_image_b64 = _load_task_image_b64(config.image_path)
 
         verdicts: list[StepVerdict] = []
         for step in steps:
@@ -533,7 +725,7 @@ async def async_evaluate_file(
                 continue
 
             v = await async_judge_step(
-                aclient, model, config, step, task_image_b64
+                aclient, model, config, step, task_reference_image_b64
             )
             verdicts.append(v)
             save_cache_entry(cache_dir, key, v)
@@ -613,7 +805,13 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         metavar="HTML",
         default=None,
-        help="Single render_*.html file: evaluate and print detailed report.",
+        help=(
+            "Single render_*.html file: evaluate and print detailed report. "
+            "Default save: intrinsic_metric/results/"
+            f"{METRIC_NAME}_<parent_dir>_<render_stem>.json "
+            "(e.g. …_shopping_gpt5mini_som_0_100_render_1.json), unlike folder mode "
+            f"which omits the render stem ({METRIC_NAME}_<folder>.json)."
+        ),
     )
     parser.add_argument(
         "folder",
@@ -659,8 +857,8 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path(__file__).resolve().parent / "cache" / "vision_capability",
         help=(
-            "Directory for caching per-step judgments "
-            "(default: intrinsic_metric/cache/vision_capability/)."
+            "Store per-step verdict JSON here to skip repeat judge API calls for "
+            "unchanged steps (default: intrinsic_metric/cache/vision_capability/)."
         ),
     )
     args = parser.parse_args(argv)
@@ -703,7 +901,7 @@ def main(argv: list[str] | None = None) -> int:
             out_path = args.output or (
                 Path(__file__).resolve().parent
                 / "results"
-                / f"{METRIC_NAME}_inspect_{html_path.stem}.json"
+                / f"{METRIC_NAME}_{html_path.parent.name}_{html_path.stem}.json"
             )
             out_path = out_path.expanduser().resolve()
             out_path.parent.mkdir(parents=True, exist_ok=True)
