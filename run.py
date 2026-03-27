@@ -417,6 +417,17 @@ def test(
                         except ValueError as e:
                             action = create_stop_action(f"ERROR: {str(e)}")
 
+                        # LLM stop-decision evaluator: verify STOP correctness or
+                        # catch cases where the task is already complete.
+                        if isinstance(agent, PromptAgent):
+                            action = agent.evaluate_stop_decision(
+                                action,
+                                trajectory,
+                                intent,
+                                meta_data,
+                                images=images,
+                            )
+
                 trajectory.append(action)
 
                 action_str = get_action_description(
