@@ -32,7 +32,7 @@ python run.py \
   --result_dir $result_dir \
   --test_config_base_dir config_files/vwa/test_shopping \
   --repeating_action_failure_th 5 --viewport_height 2048 --max_obs_length 3840 --max_steps 15 \
-  --action_set_tag som --observation_type image_som \
+  --action_set_tag som --observation_type image_som --max_tokens 512\
   --stop_eval
 
 # 2. accessibility_tree only

@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 import json
 import re
 from typing import Any, Optional
@@ -262,15 +263,18 @@ class PromptAgent(Agent):
                 "1. What exactly does the objective require? "
                 "(a specific piece of information, a completed action, a navigation target, etc.)\n"
                 "2. Is the required information or confirmation of completion clearly visible "
-                "in the current observation?\n"
-                "3. Is the agent's proposed answer accurate and complete based on what is shown?\n"
-                "4. Does the action history show the agent actually reached the right state "
-                "(e.g., navigated to the correct page, submitted the right form)?\n\n"
-                "Output format — reply with your reasoning, then end with EXACTLY ONE of:\n"
+                "in the current observation? Like for prices, names, counts, colors, statuses, etc.\n"
+                "3. Did the agent reach the correct page to stop? "
+                "The STOP criteria is STRICT:\n"
+                "   - MUST be on the exact item/post/listing page if the task requires it "
+                "(e.g. the product detail page, the specific post page) — NOT a search results page, "
+                "category page, or overview page.\n"
+                "   - ONLY IF it is impossible to reach the exact item page (e.g. no direct link exists, or summary is required), "
+                "stop at the best available page that contains the answer and state it clearly.\n\n"
+                "Output format — reply with your reasoning, then end with EXACTLY ONE of with triple backticks:\n"
                 "- ```keep``` if stopping is correct and the answer is accurate.\n"
-                "- ```<next_action>``` (e.g. ```click [42]```, ```scroll [down]```, "
-                "```goto [url]```) if the task is NOT yet complete. "
-                "Choose the most logical next step based on the current observation."
+                "- ```<next_action>``` (e.g. ```click [42]```, ```scroll [down]```) if the task is NOT yet complete. "
+                "Choose the most logical next action based on the current observation."
             )
             user_message = (
                 f"OBJECTIVE: {intent}\n\n"
@@ -290,13 +294,19 @@ class PromptAgent(Agent):
                 "information to answer the objective — without any further actions.\n\n"
                 "Reason step-by-step through the following:\n"
                 "1. What exactly does the objective require? "
-                "(find specific information, confirm an action was done, etc.)\n"
-                "2. Carefully scan the current observation: is the required answer or "
-                "completion evidence already present on the page?\n"
-                "3. Review the action history: has the agent already done what was needed?\n"
-                "4. Would taking the agent's proposed next action actually help, "
-                "or is it unnecessary?\n\n"
-                "Output format — reply with your reasoning, then end with EXACTLY ONE of:\n"
+                "(a specific piece of information, a completed action, a navigation target, etc.)\n"
+                "2. Is the required information or confirmation of completion clearly visible "
+                "in the current observation? Like for prices, names, counts, colors, statuses, etc.\n"
+                "3. Has the agent reached the correct page to stop? "
+                "The STOP criteria is STRICT:\n"
+                "   - MUST be on the exact item/post/listing page if the task requires it "
+                "(e.g. the product detail page, the specific post page) — NOT a search results page, "
+                "category page, or overview page. Stopping anywhere else will FAIL the task.\n"
+                "   - ONLY IF it is impossible to reach the exact item page (e.g. no direct link exists, or summary is required), "
+                "stop at the best available page that contains the answer and state it clearly.\n"
+                "4. Would the agent's proposed next action add new information or progress, "
+                "or is it redundant given what is already visible?\n\n"
+                "Output format — reply with your reasoning, then end with EXACTLY ONE of with triple backticks:\n"
                 "- ```keep``` if the task is not yet complete and the agent should continue.\n"
                 "- ```stop [answer]``` if the task IS already complete. "
                 "The answer must be the exact value the objective asked for "
@@ -342,20 +352,44 @@ class PromptAgent(Agent):
             # HuggingFace and other text-only providers: plain string.
             prompt = f"{system_prompt}\n\n{user_message}"
 
+        # Reasoning models (e.g. gpt-5-mini) consume hidden thinking tokens within
+        # max_completion_tokens. 384 (the default) leaves nothing for visible output.
+        # Use a higher limit specifically for the evaluator call.
+        eval_lm_config = dataclasses.replace(
+            self.lm_config,
+            gen_config={**self.lm_config.gen_config, "max_tokens": 2048},
+        )
         try:
-            response = call_llm(self.lm_config, prompt)
+            response = call_llm(eval_lm_config, prompt)
         except Exception:
             return action  # any LLM error → keep original
 
-        # Parse the response for a backtick-delimited action.
+        case_label = "STOP" if is_stop else "non-STOP"
+        original_action_str = action.get("answer") if is_stop else action.get("raw_prediction", str(action))
+        print(f"[stop_eval | {case_label}] Agent action: {original_action_str}", flush=True)
+        print(f"[stop_eval | {case_label}] Evaluator response: {response}", flush=True)
+
+        # Parse the response for an action string.
+        # Priority 1: backtick-delimited  ```action```
+        # Priority 2: last non-empty line (models routinely omit backtick
+        #             formatting and just write "keep" or "click [16]" etc.)
         pattern = r"```((.|\n)*?)```"
         match = re.search(pattern, response)
-        if not match:
-            return action  # no parseable output → keep original
-
-        parsed = match.group(1).strip()
+        if match:
+            parsed = match.group(1).strip()
+        else:
+            last_line = next(
+                (l.strip() for l in reversed(response.splitlines()) if l.strip()),
+                "",
+            )
+            if last_line:
+                parsed = last_line
+            else:
+                print("[stop_eval] no parseable action found — keeping original", flush=True)
+                return action
 
         if parsed.lower() == "keep":
+            print("[stop_eval] decision: keep original action", flush=True)
             return action
 
         # Attempt to build a new Action from the parsed string.
@@ -369,10 +403,13 @@ class PromptAgent(Agent):
             elif self.action_set_tag == "playwright":
                 new_action = create_playwright_action(parsed)
             else:
+                print("[stop_eval] unknown action_set_tag — keeping original", flush=True)
                 return action  # unknown tag → keep original
+            print(f"[stop_eval] decision: override action → {parsed!r}", flush=True)
             new_action["raw_prediction"] = response
             return new_action
         except ActionParsingError:
+            print(f"[stop_eval] could not parse replacement {parsed!r} — keeping original", flush=True)
             return action  # unparseable replacement → keep original
 
     def reset(self, test_config_file: str) -> None:

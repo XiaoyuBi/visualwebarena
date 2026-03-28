@@ -294,7 +294,15 @@ def generate_from_openai_chat_completion(
         messages=messages,
         **_chat_completion_extra_params(model, max_tokens, temperature, top_p),
     )
-    answer: str = response.choices[0].message.content
+    choice = response.choices[0]
+    answer: str = choice.message.content or ""
+    if not answer:
+        print(
+            f"[openai] Empty response from model={model!r}, "
+            f"finish_reason={choice.finish_reason!r}. "
+            "Possible causes: content_filter, token budget exhausted (max_completion_tokens too low for reasoning model).",
+            flush=True,
+        )
     return answer
 
 
