@@ -129,6 +129,13 @@ def config() -> argparse.Namespace:
         type=int,
         default=5,
     )
+    parser.add_argument(
+        "--stop_eval",
+        action="store_true",
+        help="After each action, run a second LLM call to verify the stop decision: "
+             "confirm a STOP is correct, or detect that the task is already complete "
+             "and override a non-STOP action with STOP.",
+    )
 
     parser.add_argument("--test_config_base_dir", type=str)
 
@@ -419,7 +426,7 @@ def test(
 
                         # LLM stop-decision evaluator: verify STOP correctness or
                         # catch cases where the task is already complete.
-                        if isinstance(agent, PromptAgent):
+                        if args.stop_eval and isinstance(agent, PromptAgent):
                             action = agent.evaluate_stop_decision(
                                 action,
                                 trajectory,
