@@ -45,6 +45,48 @@ def compute_url_revisit_rate(folder: str | Path) -> tuple[float, int]:
     return sum_of_ratios, num_htmls
 
 
+def _dedupe_consecutive(urls: list[str]) -> list[str]:
+    """Collapse consecutive identical URLs (e.g. AAABA → ABA)."""
+    if not urls:
+        return []
+    out = [urls[0]]
+    for u in urls[1:]:
+        if u != out[-1]:
+            out.append(u)
+    return out
+
+
+def compute_url_revisit_dedup_rate(folder: str | Path) -> tuple[float, int]:
+    """Sum over ``render_*.html`` of (excess backtracks / deduped trajectory length).
+
+    Like ``compute_url_revisit_rate`` but first collapses consecutive identical
+    URLs so that staying on / scrolling the same page is not counted as a revisit.
+    Only true navigation back to a previously visited page counts.
+
+    Example: AAABA → dedupe → ABA → excess revisits for A = 1.
+    """
+    path = Path(folder)
+    if not path.is_dir():
+        return (0.0, 0)
+
+    html_files = sorted(path.glob("render_*.html"))
+    num_htmls = len(html_files)
+    sum_of_ratios = 0.0
+
+    for html_file in html_files:
+        content = html_file.read_text(encoding="utf-8", errors="replace")
+        urls = _URL_LINE_RE.findall(content)
+        deduped = _dedupe_consecutive(urls)
+        traj_length = len(deduped)
+        if traj_length == 0:
+            continue
+        counts = Counter(deduped)
+        num_excess = sum(c - 1 for c in counts.values() if c > 1)
+        sum_of_ratios += num_excess / traj_length
+
+    return sum_of_ratios, num_htmls
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
