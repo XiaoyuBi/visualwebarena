@@ -134,6 +134,9 @@ class PromptAgent(Agent):
         else:
             self.multimodal_inputs = False
 
+        # Rolling history of stop-eval decisions for use as in-context examples.
+        self._stop_eval_history: list[str] = []
+
     def set_action_set_tag(self, tag: str) -> None:
         self.action_set_tag = tag
 
@@ -254,6 +257,17 @@ class PromptAgent(Agent):
 
         is_stop = action["action_type"] == ActionTypes.STOP
 
+        # Build a summary of the last ≤3 stop-eval decisions for the prompt.
+        recent_history = self._stop_eval_history[-3:]
+        if recent_history:
+            stop_eval_history_str = (
+                "PREVIOUS STOP-EVAL DECISIONS (most recent last):\n"
+                + "\n".join(recent_history)
+                + "\n\n"
+            )
+        else:
+            stop_eval_history_str = ""
+
         if is_stop:
             system_prompt = (
                 "You are a critical evaluator for a web automation agent. "
@@ -267,10 +281,10 @@ class PromptAgent(Agent):
                 "3. Did the agent reach the correct page to stop? "
                 "The STOP criteria is STRICT:\n"
                 "   - MUST be on the exact item/post/listing page if the task requires it "
-                "(e.g. the product detail page, the specific post page) — NOT a search results page, "
-                "category page, or overview page.\n"
+                "(e.g. EVEN IF you find the item, you HAVE TO CLICK INTO that exact item page/URL to be considered completed)"
+                "NOT a search results page, category page, or overview page.\n"
                 "   - ONLY IF it is impossible to reach the exact item page (e.g. no direct link exists, or summary is required), "
-                "stop at the best available page that contains the answer and state it clearly.\n\n"
+                "stop at the best available page that contains the answer.\n\n"
                 "Output format — reply with your reasoning, then end with EXACTLY ONE of with triple backticks:\n"
                 "- ```keep``` if stopping is correct and the answer is accurate.\n"
                 "- ```<next_action>``` (e.g. ```click [42]```, ```scroll [down]```) if the task is NOT yet complete. "
@@ -279,6 +293,7 @@ class PromptAgent(Agent):
             user_message = (
                 f"OBJECTIVE: {intent}\n\n"
                 f"ACTION HISTORY (all steps taken so far):\n{action_history_str}\n\n"
+                f"{stop_eval_history_str}"
                 f"CURRENT URL: {url}\n\n"
                 f"CURRENT OBSERVATION:\n{obs}\n\n"
                 f"AGENT'S PROPOSED STOP ANSWER: {action['answer']}\n\n"
@@ -316,6 +331,7 @@ class PromptAgent(Agent):
             user_message = (
                 f"OBJECTIVE: {intent}\n\n"
                 f"ACTION HISTORY (all steps taken so far):\n{action_history_str}\n\n"
+                f"{stop_eval_history_str}"
                 f"CURRENT URL: {url}\n\n"
                 f"CURRENT OBSERVATION:\n{obs}\n\n"
                 f"AGENT'S PROPOSED NEXT ACTION: {action.get('raw_prediction', str(action))}\n\n"
@@ -390,6 +406,11 @@ class PromptAgent(Agent):
 
         if parsed.lower() == "keep":
             print("[stop_eval] decision: keep original action", flush=True)
+            self._stop_eval_history.append(
+                f"[{case_label}] Agent: {original_action_str!r}\n"
+                f"Evaluator reasoning: {response}\n"
+                f"Decision: keep"
+            )
             return action
 
         # Attempt to build a new Action from the parsed string.
@@ -406,6 +427,11 @@ class PromptAgent(Agent):
                 print("[stop_eval] unknown action_set_tag — keeping original", flush=True)
                 return action  # unknown tag → keep original
             print(f"[stop_eval] decision: override action → {parsed!r}", flush=True)
+            self._stop_eval_history.append(
+                f"[{case_label}] Agent: {original_action_str!r}\n"
+                f"Evaluator reasoning: {response}\n"
+                f"Decision: override with {parsed!r}"
+            )
             new_action["raw_prediction"] = response
             return new_action
         except ActionParsingError:
@@ -413,7 +439,7 @@ class PromptAgent(Agent):
             return action  # unparseable replacement → keep original
 
     def reset(self, test_config_file: str) -> None:
-        pass
+        self._stop_eval_history = []
 
 
 def construct_agent(args: argparse.Namespace, captioning_fn=None) -> Agent:
