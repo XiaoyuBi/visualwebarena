@@ -33,7 +33,7 @@ def _dedupe_consecutive(urls: list[str]) -> list[str]:
     return out
 
 
-def compute_url_revisit_rate(folder: str | Path) -> tuple[float, int]:
+def compute_url_revisit_dedup_rate(folder: str | Path) -> tuple[float, int]:
     """Sum over ``render_*.html`` of (excess revisits / deduped trajectory length).
 
     First collapses consecutive identical URLs so that staying on / scrolling
@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: not a directory: {folder}", file=sys.stderr)
         return 1
 
-    ratio_sum, count = compute_url_revisit_rate(folder)
+    ratio_sum, count = compute_url_revisit_dedup_rate(folder)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         f"metric: {METRIC_NAME}",
