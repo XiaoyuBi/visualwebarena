@@ -1,4 +1,8 @@
-"""Per-file URL revisit rate from VisualWebArena ``render_*.html`` trajectories."""
+"""Per-file URL revisit rate from VisualWebArena ``render_*.html`` trajectories.
+
+Consecutive identical URLs are collapsed before counting so that scrolling or
+staying on the same page is not treated as a revisit.
+"""
 
 from __future__ import annotations
 
@@ -18,11 +22,25 @@ _URL_LINE_RE = re.compile(
 )
 
 
-def compute_url_revisit_rate(folder: str | Path) -> tuple[float, int]:
-    """Sum over ``render_*.html`` of (excess revisits / trajectory length).
+def _dedupe_consecutive(urls: list[str]) -> list[str]:
+    """Collapse consecutive identical URLs (e.g. AAABA → ABA)."""
+    if not urls:
+        return []
+    out = [urls[0]]
+    for u in urls[1:]:
+        if u != out[-1]:
+            out.append(u)
+    return out
 
-    Excess revisits = for each URL seen more than once, add (count - 1).
-    Trajectory length = number of New Page URL observations in the file.
+
+def compute_url_revisit_dedup_rate(folder: str | Path) -> tuple[float, int]:
+    """Sum over ``render_*.html`` of (excess revisits / deduped trajectory length).
+
+    First collapses consecutive identical URLs so that staying on / scrolling
+    the same page is not counted as a revisit. Only true navigation back to a
+    previously visited page counts.
+
+    Example: AAABA → dedupe → ABA → excess revisits for A = 1.
     """
     path = Path(folder)
     if not path.is_dir():
@@ -35,12 +53,13 @@ def compute_url_revisit_rate(folder: str | Path) -> tuple[float, int]:
     for html_file in html_files:
         content = html_file.read_text(encoding="utf-8", errors="replace")
         urls = _URL_LINE_RE.findall(content)
-        traj_length = len(urls)
+        deduped = _dedupe_consecutive(urls)
+        traj_length = len(deduped)
         if traj_length == 0:
             continue
-        counts = Counter(urls)
-        num_excess_revisits = sum(c - 1 for c in counts.values() if c > 1)
-        sum_of_ratios += num_excess_revisits / traj_length
+        counts = Counter(deduped)
+        num_excess = sum(c - 1 for c in counts.values() if c > 1)
+        sum_of_ratios += num_excess / traj_length
 
     return sum_of_ratios, num_htmls
 
@@ -49,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Compute URL revisit rate from render_*.html in a results folder "
-            "(excess revisits / trajectory length per file, then sum)."
+            "(excess revisits / deduped trajectory length per file, then sum)."
         )
     )
     parser.add_argument(
@@ -79,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: not a directory: {folder}", file=sys.stderr)
         return 1
 
-    ratio_sum, count = compute_url_revisit_rate(folder)
+    ratio_sum, count = compute_url_revisit_dedup_rate(folder)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         f"metric: {METRIC_NAME}",
