@@ -1,4 +1,8 @@
-"""Per-file URL revisit rate from VisualWebArena ``render_*.html`` trajectories."""
+"""Per-file URL revisit rate from VisualWebArena ``render_*.html`` trajectories.
+
+Consecutive identical URLs are collapsed before counting so that scrolling or
+staying on the same page is not treated as a revisit.
+"""
 
 from __future__ import annotations
 
@@ -18,33 +22,6 @@ _URL_LINE_RE = re.compile(
 )
 
 
-def compute_url_revisit_rate(folder: str | Path) -> tuple[float, int]:
-    """Sum over ``render_*.html`` of (excess revisits / trajectory length).
-
-    Excess revisits = for each URL seen more than once, add (count - 1).
-    Trajectory length = number of New Page URL observations in the file.
-    """
-    path = Path(folder)
-    if not path.is_dir():
-        return (0.0, 0)
-
-    html_files = sorted(path.glob("render_*.html"))
-    num_htmls = len(html_files)
-    sum_of_ratios = 0.0
-
-    for html_file in html_files:
-        content = html_file.read_text(encoding="utf-8", errors="replace")
-        urls = _URL_LINE_RE.findall(content)
-        traj_length = len(urls)
-        if traj_length == 0:
-            continue
-        counts = Counter(urls)
-        num_excess_revisits = sum(c - 1 for c in counts.values() if c > 1)
-        sum_of_ratios += num_excess_revisits / traj_length
-
-    return sum_of_ratios, num_htmls
-
-
 def _dedupe_consecutive(urls: list[str]) -> list[str]:
     """Collapse consecutive identical URLs (e.g. AAABA → ABA)."""
     if not urls:
@@ -57,11 +34,11 @@ def _dedupe_consecutive(urls: list[str]) -> list[str]:
 
 
 def compute_url_revisit_dedup_rate(folder: str | Path) -> tuple[float, int]:
-    """Sum over ``render_*.html`` of (excess backtracks / deduped trajectory length).
+    """Sum over ``render_*.html`` of (excess revisits / deduped trajectory length).
 
-    Like ``compute_url_revisit_rate`` but first collapses consecutive identical
-    URLs so that staying on / scrolling the same page is not counted as a revisit.
-    Only true navigation back to a previously visited page counts.
+    First collapses consecutive identical URLs so that staying on / scrolling
+    the same page is not counted as a revisit. Only true navigation back to a
+    previously visited page counts.
 
     Example: AAABA → dedupe → ABA → excess revisits for A = 1.
     """
@@ -91,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Compute URL revisit rate from render_*.html in a results folder "
-            "(excess revisits / trajectory length per file, then sum)."
+            "(excess revisits / deduped trajectory length per file, then sum)."
         )
     )
     parser.add_argument(
@@ -121,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: not a directory: {folder}", file=sys.stderr)
         return 1
 
-    ratio_sum, count = compute_url_revisit_rate(folder)
+    ratio_sum, count = compute_url_revisit_dedup_rate(folder)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         f"metric: {METRIC_NAME}",
