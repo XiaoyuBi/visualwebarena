@@ -211,6 +211,34 @@ def _compact_image_note(b64: str) -> str:
     )
 
 
+def _resize_b64_image(b64: str, max_side: int) -> str:
+    """Resize a base64-encoded image so its longest side <= max_side pixels.
+
+    Returns the original b64 unchanged if the image is already within bounds,
+    if Pillow is unavailable, or if decoding fails.
+    """
+    try:
+        import io
+        from PIL import Image
+    except ImportError:
+        return b64
+    try:
+        raw = base64.b64decode(b64, validate=False)
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        w, h = img.size
+        if max(w, h) <= max_side:
+            return b64
+        scale = max_side / max(w, h)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return b64
+
+
 def _tiny_placeholder_image_part() -> dict[str, Any]:
     """Same multimodal shape as real VLM data: ``type: image_url`` with a minimal valid PNG."""
     return {
@@ -248,6 +276,7 @@ def _user_message_from_template(
     screenshot_b64: str | None,
     *,
     ignore_images: bool = False,
+    resize_max: int | None = None,
 ) -> dict[str, Any]:
     text = template.format(
         observation=observation,
@@ -261,11 +290,16 @@ def _user_message_from_template(
         if ignore_images:
             parts.append(_tiny_placeholder_image_part())
         else:
+            img_b64 = (
+                _resize_b64_image(screenshot_b64, resize_max)
+                if resize_max is not None
+                else screenshot_b64
+            )
             parts.append(
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/png;base64,{screenshot_b64}",
+                        "url": f"data:image/png;base64,{img_b64}",
                     },
                 }
             )
@@ -277,6 +311,7 @@ def _few_shot_messages(
     repo_root: Path,
     *,
     ignore_images: bool = False,
+    resize_max: int | None = None,
 ) -> list[dict[str, Any]]:
     """Turn prompt JSON `examples` into user/assistant message pairs."""
     out: list[dict[str, Any]] = []
@@ -295,6 +330,11 @@ def _few_shot_messages(
                     _tiny_placeholder_image_part(),
                 ]
             else:
+                if resize_max is not None:
+                    # data_url is "data:<mime>;base64,<b64>" — resize the b64 part
+                    _prefix, _b64 = data_url.split(",", 1)
+                    _b64_resized = _resize_b64_image(_b64, resize_max)
+                    data_url = f"data:image/png;base64,{_b64_resized}"
                 few_user_parts = [
                     {"type": "text", "text": user_text},
                     {"type": "text", "text": _CURRENT_PAGE_IMAGE_LABEL},
@@ -334,6 +374,7 @@ def build_step_examples(
     max_obs_chars: int,
     repo_root: Path,
     ignore_images: bool = False,
+    resize_max: int | None = None,
 ) -> list[dict[str, Any]]:
     """One JSON object per usable step: { \"messages\": [...] }.
 
@@ -358,7 +399,12 @@ def build_step_examples(
     if include_examples:
         examples = prompt_data.get("examples") or []
         prefix.extend(
-            _few_shot_messages(examples, repo_root, ignore_images=ignore_images)
+            _few_shot_messages(
+                examples,
+                repo_root,
+                ignore_images=ignore_images,
+                resize_max=resize_max,
+            )
         )
 
     out: list[dict[str, Any]] = []
@@ -378,6 +424,7 @@ def build_step_examples(
             previous_action=prev,
             screenshot_b64=step.screenshot_b64,
             ignore_images=ignore_images,
+            resize_max=resize_max,
         )
         messages: list[dict[str, Any]] = list(prefix) + [
             user_msg,
@@ -456,6 +503,18 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Replace every screenshot with a minimal valid 1x1 PNG image_url "
             "instead of the full screenshot (small on disk, same JSON shape as VLM SFT)."
+        ),
+    )
+    parser.add_argument(
+        "--image-resize",
+        type=int,
+        default=None,
+        metavar="MAX_SIDE",
+        help=(
+            "Resize screenshots (and few-shot example images) so the longest side "
+            "is at most MAX_SIDE pixels before base64-encoding. "
+            "Aspect ratio is preserved. Requires Pillow. "
+            "Ignored when --ignore-images is set. Example: --image-resize 720"
         ),
     )
     parser.add_argument(
@@ -540,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             config, steps = parse_render_html(text)
+            resize_max = args.image_resize if not args.ignore_images else None
             step_examples = build_step_examples(
                 config,
                 steps,
@@ -548,6 +608,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_obs_chars=args.max_obs_chars,
                 repo_root=_REPO_ROOT,
                 ignore_images=args.ignore_images,
+                resize_max=resize_max,
             )
             if not step_examples:
                 skipped += 1
