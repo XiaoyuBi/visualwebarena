@@ -8,8 +8,8 @@
 # Conventions:
 #   - idx < 100  → eval slice  (_eval suffix, last)
 #   - idx >= 100 → training slice
-#   - sft_*      → PASS-only trajectories (supervised fine-tuning)
-#   - rl_*       → PASS + FAIL trajectories (reward-learning / RL)
+#   - sft_*      → PASS-only, prompt+assistant (SFT format, create_sft_dataset.py)
+#   - rl_*       → PASS+FAIL, prompt-only + ground_truth (RFT format, create_rl_dataset.py)
 #   - *_image_resized → screenshots resized so longest side ≤ 720 px (LANCZOS)
 #   - *_image_ignored → screenshot replaced with 1×1 PNG placeholder
 #   - *_noex     → no few-shot examples in prompt (cleaner loss signal)
@@ -18,7 +18,13 @@
 set -euo pipefail
 
 SCRIPT="gpt4v_som/create_sft_dataset.py"
+RL_SCRIPT="gpt4v_som/create_rl_dataset.py"
 OUT="gpt4v_som/dataset"
+
+# Pillow is required for --image-resize. Install it if missing.
+python3 -c "from PIL import Image" 2>/dev/null \
+  || pip3 install -q Pillow 2>/dev/null \
+  || sudo apt-get install -y -q python3-pil
 
 # ---------------------------------------------------------------------------
 # SFT + image_resized
@@ -89,60 +95,60 @@ python3 "$SCRIPT" \
   -o "$OUT/sft_image_ignored_noex_eval.jsonl"
 
 # ---------------------------------------------------------------------------
-# RL + image_resized
+# RL + image_resized  (RFT format: prompt-only, ground_truth=action|||0/1)
 # ---------------------------------------------------------------------------
 
 echo "=== rl_image_resized (PASS+FAIL, idx >= 100, 720px, with examples) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 100 \
   --image-resize 720 \
   -o "$OUT/rl_image_resized.jsonl"
 
 echo "=== rl_image_resized_eval (PASS+FAIL, idx < 100, 720px, with examples) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 0 --max-render-id 100 \
   --image-resize 720 \
   -o "$OUT/rl_image_resized_eval.jsonl"
 
 echo "=== rl_image_resized_noex (PASS+FAIL, idx >= 100, 720px, no few-shot) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 100 \
   --no-examples \
   --image-resize 720 \
   -o "$OUT/rl_image_resized_noex.jsonl"
 
 echo "=== rl_image_resized_noex_eval (PASS+FAIL, idx < 100, 720px, no few-shot) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 0 --max-render-id 100 \
   --no-examples \
   --image-resize 720 \
   -o "$OUT/rl_image_resized_noex_eval.jsonl"
 
 # ---------------------------------------------------------------------------
-# RL + image_ignored
+# RL + image_ignored  (RFT format: prompt-only, ground_truth=action|||0/1)
 # ---------------------------------------------------------------------------
 
 echo "=== rl_image_ignored (PASS+FAIL, idx >= 100, images replaced, with examples) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 100 \
   --ignore-images \
   -o "$OUT/rl_image_ignored.jsonl"
 
 echo "=== rl_image_ignored_eval (PASS+FAIL, idx < 100, images replaced, with examples) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 0 --max-render-id 100 \
   --ignore-images \
   -o "$OUT/rl_image_ignored_eval.jsonl"
 
 echo "=== rl_image_ignored_noex (PASS+FAIL, idx >= 100, images replaced, no few-shot) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 100 \
   --ignore-images \
   --no-examples \
   -o "$OUT/rl_image_ignored_noex.jsonl"
 
 echo "=== rl_image_ignored_noex_eval (PASS+FAIL, idx < 100, images replaced, no few-shot) ==="
-python3 "$SCRIPT" \
+python3 "$RL_SCRIPT" \
   --min-render-id 0 --max-render-id 100 \
   --ignore-images \
   --no-examples \
