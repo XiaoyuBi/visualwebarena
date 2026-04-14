@@ -1,1 +1,1 @@
-fireworks-ai[reward-kit]
+eval-protocol

@@ -1,0 +1,2 @@
+{"messages": [{"role": "system", "content": "You are a web agent."}, {"role": "user", "content": "Click the login button."}], "ground_truth": "click [34]|||1"}
+{"messages": [{"role": "system", "content": "You are a web agent."}, {"role": "user", "content": "Type your email."}], "ground_truth": "type [5] [test@example.com]|||0"}
