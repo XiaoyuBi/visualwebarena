@@ -617,7 +617,6 @@ def main(argv: list[str] | None = None) -> int:
             for example in step_examples:
                 step_index = example.pop("_step_index")
                 line_obj: dict[str, Any] = dict(example)
-                line_obj["success"] = success
                 if args.with_meta:
                     line_obj["meta"] = {
                         "source_html": str(html_path.relative_to(_REPO_ROOT)),
