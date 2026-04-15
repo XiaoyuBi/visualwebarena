@@ -145,6 +145,7 @@ config_files/vwa/test_shopping.json
 config_files/wa/test_webarena.json
 config_files/wa/test_webarena/*
 
+.tools
 cache/*
 agents/prompts/jsons/*
 results/*
@@ -152,3 +153,5 @@ log_files/
 results_*/
 intrinsic_metric/cache/*
 intrinsic_metric/results/*
+gpt4v_som/raw
+gpt4v_som/dataset
