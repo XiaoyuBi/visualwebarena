@@ -129,10 +129,10 @@ class PromptAgent(Agent):
             or ("qwen" in model_lower and "vl" in model_lower)
             or "gpt-5" in model_lower
         )
-        if is_vision_model and type(prompt_constructor) == MultimodalCoTPromptConstructor:
-            self.multimodal_inputs = True
-        else:
-            self.multimodal_inputs = False
+        # Use multimodal prompt path whenever the constructor expects images.
+        # Some hosted SFT deployment names (e.g. model#deployment) may not contain
+        # explicit vendor/model keywords even though they are vision-capable.
+        self.multimodal_inputs = type(prompt_constructor) == MultimodalCoTPromptConstructor
 
         # Rolling history of stop-eval decisions for use as in-context examples.
         self._stop_eval_history: list[str] = []

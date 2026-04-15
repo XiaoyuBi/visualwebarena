@@ -320,9 +320,7 @@ def generate_from_openai_eval_chat_completion(
     response = eval_client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        top_p=top_p,
+        **_chat_completion_extra_params(model, max_tokens, temperature, top_p),
     )
     answer: str = response.choices[0].message.content
     return answer
