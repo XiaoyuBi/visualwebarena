@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 from eval_protocol.models import EvaluateResult, EvaluationRow, Message
 from eval_protocol.pytest import evaluation_test
+from eval_protocol.pytest.default_single_turn_rollout_process import SingleTurnRolloutProcessor
 
 from main import score_action
 
@@ -31,9 +32,16 @@ def _dataset_adapter(rows: List[Dict[str, Any]]) -> List[EvaluationRow]:
 @evaluation_test(
     input_dataset=[_SAMPLE],
     dataset_adapter=_dataset_adapter,
+    completion_params=[{
+        "model": "fireworks_ai/accounts/xiaoyubi-kyywdxfo90t/models/sft-vwa-image-resized-2epoch",
+        "temperature": 0.0,
+    }],
+    max_dataset_rows=5,
+    passed_threshold=0.0,
+    rollout_processor=SingleTurnRolloutProcessor(),
     mode="pointwise",
 )
-def test_evaluate(row: EvaluationRow) -> EvaluationRow:
+def test_evaluate(row: EvaluationRow, **kwargs) -> EvaluationRow:
     messages = [
         m.model_dump() if hasattr(m, "model_dump") else m
         for m in (row.messages or [])
