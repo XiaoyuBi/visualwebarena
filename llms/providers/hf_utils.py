@@ -1,4 +1,7 @@
-from text_generation import Client  # type: ignore
+try:
+    from text_generation import Client  # type: ignore
+except ImportError:
+    Client = None
 
 
 def generate_from_huggingface_completion(
